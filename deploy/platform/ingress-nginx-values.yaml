@@ -1,0 +1,33 @@
+# Helm values for ingress-nginx on kind. Installed by `make ingress-up`.
+#
+# On kind there is no cloud load balancer, so the controller binds the node's
+# 80/443 directly via hostPort and is pinned to the ingress-ready node. kind's
+# extraPortMappings (see deploy/kind/kind-config.yaml) then forward host
+# 8080/8443 to those node ports.
+controller:
+  # Bind the node's 80/443 directly instead of relying on a LoadBalancer Service.
+  hostPort:
+    enabled: true
+
+  # No cloud LB to provision; the Service is internal-only.
+  service:
+    type: ClusterIP
+
+  # Schedule onto the node labelled in kind-config.yaml, and tolerate the
+  # control-plane taint so it runs on this single-node cluster.
+  nodeSelector:
+    ingress-ready: "true"
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+
+  # publishService needs a LoadBalancer Service; disable it for hostPort mode.
+  publishService:
+    enabled: false
+
+  # Treat Ingress objects without an explicit ingressClassName as ours too.
+  watchIngressWithoutClass: true

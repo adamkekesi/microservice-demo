@@ -11,8 +11,17 @@ DB_USER ?= logistics
 
 GO := go
 
+# Local kind cluster (deploy/kind, deploy/platform). Host ports are 8080/8443 so
+# this cluster coexists with any other local kind cluster bound to 80/443.
+KIND_CLUSTER   ?= logistics-microservice
+KIND_CONTEXT   := kind-$(KIND_CLUSTER)
+KIND_CONFIG    := deploy/kind/kind-config.yaml
+INGRESS_VALUES := deploy/platform/ingress-nginx-values.yaml
+KUBECTL        := kubectl --context $(KIND_CONTEXT)
+
 .PHONY: help tidy fmt build test test-integration test-all lint \
-        run-auth run-inventory run-shipment seed compose-up compose-down docker-build
+        run-auth run-inventory run-shipment seed compose-up compose-down docker-build \
+        cluster-up ingress-up cluster-verify cluster-down
 
 help:
 	@echo "Targets:"
@@ -28,6 +37,10 @@ help:
 	@echo "  compose-up       docker compose up --build"
 	@echo "  compose-down     docker compose down -v"
 	@echo "  docker-build     build all three images"
+	@echo "  cluster-up       create the local kind cluster (deploy/kind/kind-config.yaml)"
+	@echo "  ingress-up       install ingress-nginx into the cluster (Helm)"
+	@echo "  cluster-verify   prove ingress routing works (deploys + deletes a smoke app)"
+	@echo "  cluster-down     delete the local kind cluster"
 
 # tidy runs in module mode (GOWORK=off) so each go.mod is tidied against the
 # published platform; needs GOPRIVATE (set in mise.toml) + git credentials.
@@ -98,3 +111,34 @@ docker-build:
 	  GH_TOKEN="$$(gh auth token)" docker build --secret id=gh_token,env=GH_TOKEN \
 	    -f deploy/docker/$$s.Dockerfile -t logistics-$$s . || exit 1; \
 	done
+
+# --- Local Kubernetes (kind + ingress-nginx) ----------------------------------
+
+cluster-up:
+	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
+
+ingress-up:
+	helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
+	helm repo update ingress-nginx >/dev/null
+	helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+	  --kube-context $(KIND_CONTEXT) \
+	  --namespace ingress-nginx --create-namespace \
+	  -f $(INGRESS_VALUES) --wait --timeout 5m
+	$(KUBECTL) -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s
+
+# Deploys a tiny echo app behind an Ingress, curls it through host:8080, then
+# tears it down. Proves the full path works before any real service exists.
+cluster-verify:
+	$(KUBECTL) apply -f deploy/kind/whoami-smoke.yaml
+	$(KUBECTL) -n ingress-smoke rollout status deploy/whoami --timeout=120s
+	@echo "== GET http://localhost:8080/whoami (retrying until ingress syncs) =="
+	@for i in $$(seq 1 15); do \
+	  code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/whoami || true); \
+	  if [ "$$code" = "200" ]; then echo "OK (HTTP 200):"; curl -fsS http://localhost:8080/whoami | head -n 8; break; fi; \
+	  echo "attempt $$i: HTTP $$code, waiting for route sync..."; sleep 2; \
+	  if [ "$$i" = "15" ]; then echo "FAILED: ingress never returned 200"; $(KUBECTL) delete -f deploy/kind/whoami-smoke.yaml; exit 1; fi; \
+	done
+	$(KUBECTL) delete -f deploy/kind/whoami-smoke.yaml
+
+cluster-down:
+	kind delete cluster --name $(KIND_CLUSTER)
