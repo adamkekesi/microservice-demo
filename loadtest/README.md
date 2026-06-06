@@ -12,7 +12,7 @@ pods, managed declaratively as a `TestRun` custom resource.
 
 ```
 loadtest/
-├── k6/scenarios.js          # the visitor session: register → browse → order → self-delete
+├── k6/scenarios.js          # the visitor session: log in / register → browse → order → self-delete
 ├── k8s/testrun.yaml         # TestRun CR: parallelism + diurnal env, run for ~58m
 ├── k8s/soak/
 │   ├── rbac.yaml            # ServiceAccount/Role for the launcher
@@ -35,9 +35,13 @@ the rate is a pure function of the wall clock, a crash or cluster downtime
 self-heals: the next hourly tick resumes at the correct level. No checkpoint to
 lose.
 
-**Fresh tokens — no expiry breakage.** Each "visitor" is a self-contained
-session that registers a throwaway account and logs in, so every request uses a
-token far younger than its 15-minute TTL.
+**Returning vs new visitors.** 70% of visits are returning users that reuse a
+pooled account (just log in); the other 30% are first-time signups (register +
+log in). This models a realistic mix and eases the auth bcrypt load (most visits
+skip the registration hash). The returning path self-heals: if a pooled account
+has been reclaimed by the delete wave it is re-registered on demand. Either way
+each session logs in fresh, so every request uses a token far younger than its
+15-minute TTL — no expiry breakage.
 
 **The request mix deletes data continuously.** Every visitor that places an
 order confirms/cancels it and then `DELETE`s its own shipment and reservation —
@@ -47,8 +51,8 @@ using the new per-resource delete endpoints.
 in as admin and calls each service's bulk-purge endpoint
 (`DELETE /shipment/shipments?before=…`, `…/inventory/reservations?before=…`,
 `…/auth/users?before=…`). Three big server-side deletes remove the hour's
-accumulated terminal shipments/reservations and throwaway users, keeping the
-Postgres volume (a single 10Gi PVC holding the three logical databases) bounded.
+accumulated terminal shipments/reservations and throwaway users, keeping each
+service's Postgres (a dedicated instance per service, each a 10Gi PVC) bounded.
 Active (PENDING) records and the fixtures are left untouched.
 
 **No k6 metrics exported.** The services already emit Datadog traces/metrics
@@ -81,6 +85,8 @@ targets.
   same total rate split into more segments).
 - **Order/delete intensity** — `ORDER_RATE` (fraction of visitors who order and
   then delete).
+- **Returning vs new** — `RETURNING_RATE` (default 0.7) and `RETURNING_POOL`
+  (number of reusable accounts, default 1000).
 - **Retention window** — the delete wave purges everything terminal older than
   *now*; narrow it (keep a trailing window) by changing `CUTOFF` in
   `k8s/soak/cronjob-prune.yaml`.

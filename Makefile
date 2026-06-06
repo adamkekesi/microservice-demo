@@ -23,6 +23,11 @@ GO := go
 KIND_CLUSTER   ?= logistics-microservice
 KIND_CONTEXT   := kind-$(KIND_CLUSTER)
 KIND_CONFIG    := deploy/kind/kind-config.yaml
+# Host mount kind binds in for the Postgres PVs (deploy/kind/kind-config.yaml
+# extraMounts). cluster-up refuses to run if this isn't mounted, so a missing
+# fstab mount fails loudly instead of kind silently creating an empty dir on the
+# root disk (Postgres would then init with no data on the wrong disk).
+PG_DATA_MOUNT  := /mnt/pg-data
 INGRESS_VALUES := deploy/platform/ingress-nginx-values.yaml
 METRICS_VALUES := deploy/platform/metrics-server-values.yaml
 DD_OPERATOR_VALUES := deploy/platform/datadog-operator-values.yaml
@@ -34,7 +39,8 @@ KUBECTL        := kubectl --context $(KIND_CONTEXT)
         run-auth run-inventory run-shipment seed compose-up compose-down docker-build \
         cluster-up ingress-up metrics-up datadog-up cluster-verify cluster-down \
         images deploy undeploy smoke-k8s k8s-up \
-        k6-operator-up k6-operator-down loadtest loadtest-logs loadtest-clean
+        k6-operator-up k6-operator-down loadtest loadtest-logs loadtest-clean \
+        soak-up soak-status soak-prune-now soak-down
 
 help:
 	@echo "Targets:"
@@ -141,6 +147,12 @@ docker-build:
 # --- Local Kubernetes (kind + ingress-nginx) ----------------------------------
 
 cluster-up:
+	@mountpoint -q $(PG_DATA_MOUNT) || { \
+	  echo "ERROR: $(PG_DATA_MOUNT) is not mounted (Postgres NVMe volume)."; \
+	  echo "  Mount it first: sudo mount $(PG_DATA_MOUNT)   (or check your fstab entry)."; \
+	  echo "  Skipping cluster create to avoid kind binding an empty dir on the root disk."; \
+	  exit 1; \
+	}
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
 
 ingress-up:
@@ -191,6 +203,16 @@ datadog-up:
 	$(KUBECTL) create secret generic datadog-secret -n datadog \
 	  --from-literal api-key=$$DD_API_KEY --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) apply -f $(DD_AGENT_CR)
+	# The Operator reconciles the CR into a DaemonSet asynchronously, so it does
+	# not exist the instant after apply. `rollout status` errors out immediately
+	# on a missing resource (its --timeout never kicks in), so wait for the
+	# Operator to create the DaemonSet first, then check it's rolled out.
+	@echo "waiting for the Operator to create daemonset/datadog-agent..."
+	@for i in $$(seq 1 60); do \
+	  $(KUBECTL) -n datadog get daemonset/datadog-agent >/dev/null 2>&1 && break; \
+	  [ "$$i" = "60" ] && { echo "ERROR: Operator never created the DaemonSet (check 'kubectl -n datadog logs deploy/datadog-operator')"; exit 1; }; \
+	  sleep 2; \
+	done
 	$(KUBECTL) -n datadog rollout status daemonset/datadog-agent --timeout=300s
 	# Re-apply the overlay so the datadog component's DD_TRACE_ENABLED=true reaches
 	# the Deployments (a plain `rollout restart` would keep the old, disabled spec).
@@ -208,10 +230,8 @@ images:
 
 deploy:
 	$(KUBECTL) apply -k $(K8S_OVERLAY)
-	$(KUBECTL) -n logistics rollout status statefulset/postgres --timeout=180s
-	$(KUBECTL) -n logistics rollout status deploy/auth --timeout=180s
-	$(KUBECTL) -n logistics rollout status deploy/inventory --timeout=180s
-	$(KUBECTL) -n logistics rollout status deploy/shipment --timeout=180s
+	$(KUBECTL) -n logistics rollout status statefulset/postgres-auth statefulset/postgres-inventory statefulset/postgres-shipment --timeout=180s
+	$(KUBECTL) -n logistics rollout status deploy/auth deploy/inventory deploy/shipment --timeout=180s
 
 undeploy:
 	$(KUBECTL) delete -k $(K8S_OVERLAY) --ignore-not-found
@@ -301,11 +321,13 @@ soak-status:
 	@echo "== runner pods =="; $(KUBECTL) -n $(LOADTEST_NS) get pods -l k6_cr=logistics-load 2>/dev/null || true
 	@echo "== CronJobs =="; $(KUBECTL) -n $(LOADTEST_NS) get cronjobs
 	@echo "== HPAs =="; $(KUBECTL) -n $(LOADTEST_NS) get hpa
-	@echo "== DB row counts (single postgres, 3 logical DBs) =="; \
-	  $(KUBECTL) -n $(LOADTEST_NS) exec statefulset/postgres -- sh -c '\
-	    psql -U logistics -d auth_db      -tAc "select '\''users='\''||count(*) from users"; \
-	    psql -U logistics -d inventory_db -tAc "select '\''reservations='\''||count(*) from reservations"; \
-	    psql -U logistics -d shipment_db  -tAc "select '\''shipments='\''||count(*) from shipments"' 2>/dev/null || true
+	@echo "== DB row counts (one Postgres per service) =="; \
+	  $(KUBECTL) -n $(LOADTEST_NS) exec statefulset/postgres-auth -- \
+	    sh -c 'psql -U "$$POSTGRES_USER" -d auth_db -tAc "select '\''users='\''||count(*) from users"' 2>/dev/null || true; \
+	  $(KUBECTL) -n $(LOADTEST_NS) exec statefulset/postgres-inventory -- \
+	    sh -c 'psql -U "$$POSTGRES_USER" -d inventory_db -tAc "select '\''reservations='\''||count(*) from reservations"' 2>/dev/null || true; \
+	  $(KUBECTL) -n $(LOADTEST_NS) exec statefulset/postgres-shipment -- \
+	    sh -c 'psql -U "$$POSTGRES_USER" -d shipment_db -tAc "select '\''shipments='\''||count(*) from shipments"' 2>/dev/null || true
 
 # Manually trigger one delete wave now (don't wait for :30).
 soak-prune-now:

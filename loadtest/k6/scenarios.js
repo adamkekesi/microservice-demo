@@ -37,6 +37,16 @@ const TZ_OFFSET = parseFloat(__ENV.TZ_OFFSET_HOURS || '0'); // hours to add to U
 const ORDER_RATE = parseFloat(__ENV.ORDER_RATE || '0.3'); // fraction of visitors who order
 const DURATION = __ENV.RUN_DURATION || '58m'; // a touch under an hour so the launcher can recycle cleanly
 
+// Returning vs new visitors. 70% of visits reuse a pooled account (just log in);
+// 30% are first-time signups (register + log in). This both models a realistic
+// traffic mix and eases the auth bcrypt load, since most visits skip the extra
+// registration hash. The pool accounts are role=customer, so the hourly delete
+// wave eventually purges them — the returning path is self-healing: if a pooled
+// account is gone it is re-registered on demand.
+const RETURNING_RATE = parseFloat(__ENV.RETURNING_RATE || '0.7');
+const RETURNING_POOL = parseInt(__ENV.RETURNING_POOL || '1000', 10); // distinct reusable accounts
+const VISITOR_PASSWORD = 'loadtest123';
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 function currentHour() {
@@ -83,6 +93,26 @@ function login(email, password) {
   return res.status === 200 ? res.json('access_token') : null;
 }
 
+// acquireToken returns a bearer token for this visit. 70% of the time it is a
+// returning user (reuse a pooled account, just log in); otherwise a first-time
+// signup (register a unique throwaway account, then log in). The returning path
+// self-heals: if a pooled account has been purged by the delete wave, it is
+// re-registered on demand.
+function acquireToken() {
+  if (Math.random() < RETURNING_RATE) {
+    const email = `returning-${Math.floor(Math.random() * RETURNING_POOL)}@load.example`;
+    let token = login(email, VISITOR_PASSWORD);
+    if (!token) {
+      http.post(`${AUTH}/register`, JSON.stringify({ email, password: VISITOR_PASSWORD }), { headers: JSON_HEADERS });
+      token = login(email, VISITOR_PASSWORD);
+    }
+    return token;
+  }
+  const email = `v-${__VU}-${__ITER}-${Date.now()}@load.example`;
+  http.post(`${AUTH}/register`, JSON.stringify({ email, password: VISITOR_PASSWORD }), { headers: JSON_HEADERS });
+  return login(email, VISITOR_PASSWORD);
+}
+
 function bearer(token) {
   return { headers: { ...JSON_HEADERS, Authorization: `Bearer ${token}` } };
 }
@@ -118,12 +148,7 @@ function ensure(listURL, body, field, value, token) {
 // --- the visitor session ---------------------------------------------------
 
 export function visitor(data) {
-  // A brand-new throwaway account per visit -> always a fresh, valid token, and
-  // realistic "new visitor" traffic that the hourly user purge then reclaims.
-  const email = `v-${__VU}-${__ITER}-${Date.now()}@load.example`;
-  const password = 'loadtest123';
-  http.post(`${AUTH}/register`, JSON.stringify({ email, password }), { headers: JSON_HEADERS });
-  const token = login(email, password);
+  const token = acquireToken();
   if (!token) return;
   const h = bearer(token);
 

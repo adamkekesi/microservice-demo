@@ -1,12 +1,3 @@
-# The hourly "giant delete wave" — the retention sweep that keeps the Postgres
-# volume (a single 10Gi PVC holding the three logical databases) bounded. It
-# logs in as admin through the
-# gateway and calls each service's bulk-purge DELETE endpoint with before=now,
-# so every terminal shipment/reservation and throwaway customer accumulated over
-# the hour is removed in three big server-side deletes. Active (PENDING) records
-# and the fixtures (WH-LOAD / SKU-LOAD / stock / admin) are left untouched.
-#
-# Offset to :30 so it runs mid-hour, between launcher ticks.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
