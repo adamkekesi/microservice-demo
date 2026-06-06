@@ -27,9 +27,9 @@ spec:
         value: http://ingress-nginx-controller.ingress-nginx.svc
       # Diurnal profile: 40 visitors/s during 08:00-12:00, 10/s otherwise.
       - name: VISITORS_PEAK
-        value: "400"
+        value: "1500"
       - name: VISITORS_OFF
-        value: "100"
+        value: "800"
       - name: PEAK_START_HOUR
         value: "8"
       - name: PEAK_END_HOUR
