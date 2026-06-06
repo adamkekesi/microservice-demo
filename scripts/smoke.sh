@@ -16,7 +16,9 @@ command -v curl >/dev/null || fail "curl not found"
 command -v jq   >/dev/null || fail "jq not found"
 
 for p in 8001 8002 8003; do
-  curl -s --retry 30 --retry-delay 1 --retry-connrefused -o /dev/null "http://localhost:$p/health" \
+  # --retry-all-errors: a freshly-published port may reset/EOF (not "refused")
+  # until the backend's HTTP server is actually listening.
+  curl -s --retry 60 --retry-delay 1 --retry-connrefused --retry-all-errors -o /dev/null "http://localhost:$p/health" \
     || fail "service on :$p not healthy"
 done
 
