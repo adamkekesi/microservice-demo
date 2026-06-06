@@ -1,0 +1,55 @@
+# The hourly "giant delete wave" — the retention sweep that keeps the Postgres
+# volume (a single 10Gi PVC holding the three logical databases) bounded. It
+# logs in as admin through the
+# gateway and calls each service's bulk-purge DELETE endpoint with before=now,
+# so every terminal shipment/reservation and throwaway customer accumulated over
+# the hour is removed in three big server-side deletes. Active (PENDING) records
+# and the fixtures (WH-LOAD / SKU-LOAD / stock / admin) are left untouched.
+#
+# Offset to :30 so it runs mid-hour, between launcher ticks.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k6-delete-wave
+  namespace: logistics
+spec:
+  schedule: "30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: delete-wave
+              image: curlimages/curl:8.11.1
+              env:
+                - name: BASE
+                  value: http://ingress-nginx-controller.ingress-nginx.svc
+                - name: ADMIN_EMAIL
+                  value: admin@example.com
+                - name: ADMIN_PASSWORD
+                  value: changeme123
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  TOKEN=$(curl -fsS -XPOST "$BASE/auth/login" \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+                    | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+                  [ -n "$TOKEN" ] || { echo "admin login failed"; exit 1; }
+                  CUTOFF=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                  echo "delete wave: purging terminal data created before $CUTOFF"
+                  for url in \
+                    "$BASE/shipment/shipments?before=$CUTOFF" \
+                    "$BASE/inventory/reservations?before=$CUTOFF" \
+                    "$BASE/auth/users?before=$CUTOFF"; do
+                    echo "DELETE $url"
+                    curl -fsS -XDELETE "$url" -H "Authorization: Bearer $TOKEN"
+                    echo
+                  done

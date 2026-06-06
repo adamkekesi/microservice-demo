@@ -24,7 +24,8 @@ KUBECTL        := kubectl --context $(KIND_CONTEXT)
 .PHONY: help tidy fmt build test test-integration test-all lint \
         run-auth run-inventory run-shipment seed compose-up compose-down docker-build \
         cluster-up ingress-up metrics-up cluster-verify cluster-down \
-        images deploy undeploy smoke-k8s k8s-up
+        images deploy undeploy smoke-k8s k8s-up \
+        k6-operator-up k6-operator-down loadtest loadtest-logs loadtest-clean
 
 help:
 	@echo "Targets:"
@@ -50,6 +51,15 @@ help:
 	@echo "  undeploy         delete the app manifests from the cluster"
 	@echo "  k8s-up           full bring-up: cluster + ingress + metrics + images + deploy"
 	@echo "  cluster-down     delete the local kind cluster"
+	@echo "  k6-operator-up   install the Grafana k6 operator (Helm)"
+	@echo "  loadtest         run a single ad-hoc k6 TestRun (parallelism across runner pods)"
+	@echo "  loadtest-logs    tail the k6 runner pods (live progress + end-of-test summary)"
+	@echo "  loadtest-clean   delete the TestRun + script ConfigMap"
+	@echo "  k6-operator-down uninstall the k6 operator"
+	@echo "  soak-up          start the continuous diurnal soak (operator + CronJobs + first run)"
+	@echo "  soak-status      TestRun / runner pods / CronJobs / HPAs / DB row counts"
+	@echo "  soak-prune-now   trigger one hourly delete wave immediately"
+	@echo "  soak-down        stop the soak (CronJobs + TestRun + ConfigMaps)"
 
 # tidy runs in module mode (GOWORK=off) so each go.mod is tidied against the
 # published platform; needs GOPRIVATE (set in mise.toml) + git credentials.
@@ -187,3 +197,87 @@ k8s-up: cluster-up ingress-up metrics-up images deploy
 
 cluster-down:
 	kind delete cluster --name $(KIND_CLUSTER)
+
+# --- k6 load simulator (Grafana k6 operator) ----------------------------------
+
+K6_OPERATOR_NS := k6-operator-system
+LOADTEST_NS    := logistics
+K6_SCRIPT      := loadtest/k6/scenarios.js
+K6_TESTRUN     := loadtest/k8s/testrun.yaml
+K6_CONFIGMAP   := k6-load-test
+
+# Install the operator that turns a TestRun + `parallelism` into N runner pods.
+# The chart templates its own Namespace, which deadlocks with helm: --create-
+# namespace races it ("already exists"), but without the namespace helm can't
+# store its release metadata ("not found"). So we pre-create the namespace and
+# tell the chart not to template it (namespace.create=false).
+k6-operator-up:
+	helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
+	helm repo update grafana >/dev/null
+	$(KUBECTL) create namespace $(K6_OPERATOR_NS) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	helm upgrade --install k6-operator grafana/k6-operator \
+	  --kube-context $(KIND_CONTEXT) \
+	  --namespace $(K6_OPERATOR_NS) --set namespace.create=false --wait --timeout 5m
+	$(KUBECTL) -n $(K6_OPERATOR_NS) rollout status deploy/k6-operator-controller-manager --timeout=120s
+
+# Recreate the script ConfigMap from the file, then (re)start the TestRun.
+# Deleting any prior TestRun first lets this be re-run cleanly.
+loadtest:
+	$(KUBECTL) -n $(LOADTEST_NS) create configmap $(K6_CONFIGMAP) \
+	  --from-file=$(K6_SCRIPT) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) delete -f $(K6_TESTRUN) --ignore-not-found
+	$(KUBECTL) apply -f $(K6_TESTRUN)
+	@echo "TestRun started. Watch: make loadtest-logs   (and: kubectl get hpa -n $(LOADTEST_NS) -w)"
+
+# Tail the runner pods: live k6 progress and the end-of-test summary/thresholds.
+loadtest-logs:
+	$(KUBECTL) -n $(LOADTEST_NS) logs -l k6_cr=logistics-load -f --max-log-requests 10
+
+loadtest-clean:
+	$(KUBECTL) delete -f $(K6_TESTRUN) --ignore-not-found
+	$(KUBECTL) -n $(LOADTEST_NS) delete configmap $(K6_CONFIGMAP) --ignore-not-found
+
+k6-operator-down:
+	helm uninstall k6-operator --kube-context $(KIND_CONTEXT) --namespace $(K6_OPERATOR_NS) || true
+
+# --- continuous soak (diurnal, resumable, hourly delete wave) -----------------
+
+K6_SOAK_DIR     := loadtest/k8s/soak
+K6_TESTRUN_CM   := k6-testrun-manifest
+
+# Start the continuous soak: the k6 script ConfigMap, a ConfigMap holding the
+# TestRun manifest (mounted by the launcher), the soak RBAC + two CronJobs
+# (hourly launcher = resumability; hourly delete wave = retention), and an
+# initial TestRun so load starts immediately instead of at the next top-of-hour.
+soak-up: k6-operator-up
+	$(KUBECTL) -n $(LOADTEST_NS) create configmap $(K6_CONFIGMAP) \
+	  --from-file=$(K6_SCRIPT) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(LOADTEST_NS) create configmap $(K6_TESTRUN_CM) \
+	  --from-file=testrun.yaml=$(K6_TESTRUN) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f $(K6_SOAK_DIR)
+	$(KUBECTL) delete -f $(K6_TESTRUN) --ignore-not-found
+	$(KUBECTL) apply -f $(K6_TESTRUN)
+	@echo "Soak started. Launcher relaunches hourly (resumable); delete wave runs at :30."
+	@echo "Watch: make soak-status   |   logs: make loadtest-logs"
+
+# Snapshot of the soak: TestRun, runner pods, CronJobs, and live DB row counts
+# per service (proof the hourly delete wave keeps storage bounded).
+soak-status:
+	@echo "== TestRun =="; $(KUBECTL) -n $(LOADTEST_NS) get testruns 2>/dev/null || true
+	@echo "== runner pods =="; $(KUBECTL) -n $(LOADTEST_NS) get pods -l k6_cr=logistics-load 2>/dev/null || true
+	@echo "== CronJobs =="; $(KUBECTL) -n $(LOADTEST_NS) get cronjobs
+	@echo "== HPAs =="; $(KUBECTL) -n $(LOADTEST_NS) get hpa
+	@echo "== DB row counts (single postgres, 3 logical DBs) =="; \
+	  $(KUBECTL) -n $(LOADTEST_NS) exec statefulset/postgres -- sh -c '\
+	    psql -U logistics -d auth_db      -tAc "select '\''users='\''||count(*) from users"; \
+	    psql -U logistics -d inventory_db -tAc "select '\''reservations='\''||count(*) from reservations"; \
+	    psql -U logistics -d shipment_db  -tAc "select '\''shipments='\''||count(*) from shipments"' 2>/dev/null || true
+
+# Manually trigger one delete wave now (don't wait for :30).
+soak-prune-now:
+	$(KUBECTL) -n $(LOADTEST_NS) create job --from=cronjob/k6-delete-wave k6-delete-wave-manual-$$(date +%s)
+
+soak-down:
+	$(KUBECTL) delete -f $(K6_SOAK_DIR) --ignore-not-found
+	$(KUBECTL) delete -f $(K6_TESTRUN) --ignore-not-found
+	$(KUBECTL) -n $(LOADTEST_NS) delete configmap $(K6_CONFIGMAP) $(K6_TESTRUN_CM) --ignore-not-found

@@ -42,3 +42,27 @@ run = "docker compose exec -T postgres psql -U ${POSTGRES_USER:-logistics} -d in
 [tasks.smoke]
 description = "Happy-path smoke test against the running compose stack"
 run = "scripts/smoke.sh"
+
+[tasks.k6-operator-up]
+description = "Install the Grafana k6 operator into the kind cluster (Helm)"
+run = "make k6-operator-up"
+
+[tasks.loadtest]
+description = "Run a single ad-hoc k6 TestRun via the operator"
+run = "make loadtest"
+
+[tasks.loadtest-clean]
+description = "Delete the k6 TestRun + script ConfigMap"
+run = "make loadtest-clean"
+
+[tasks.soak-up]
+description = "Start the continuous diurnal soak (operator + hourly CronJobs + first run)"
+run = "make soak-up"
+
+[tasks.soak-status]
+description = "Soak snapshot: TestRun / pods / CronJobs / HPAs / DB row counts"
+run = "make soak-status"
+
+[tasks.soak-down]
+description = "Stop the soak (CronJobs + TestRun + ConfigMaps)"
+run = "make soak-down"
