@@ -3,6 +3,13 @@
 # use the go.work overlay for the local `platform` (offline, no credentials);
 # `tidy` fetches the PUBLISHED platform module (needs GOPRIVATE + git creds).
 
+# Load the local, git-ignored .env (if present) so secrets like DD_API_KEY are
+# available to targets such as datadog-up without exporting them by hand. Keep
+# .env to simple KEY=value lines (no shell expansion). docker compose reads it
+# automatically; this makes `make` see it too.
+-include .env
+export
+
 MODULES  := platform auth inventory shipment
 SERVICES := auth inventory shipment
 
@@ -209,7 +216,7 @@ smoke-k8s:
 	SKIP_HEALTHCHECK=1 scripts/smoke.sh
 
 # One command from nothing to a running, smoke-tested stack.
-k8s-up: cluster-up ingress-up metrics-up images deploy
+k8s-up: cluster-up ingress-up metrics-up images deploy datadog-up
 	@echo "Stack is up. Try: make smoke-k8s"
 
 cluster-down:

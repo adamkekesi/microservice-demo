@@ -1,0 +1,45 @@
+# Local-only storage wiring that pins the Postgres volume to an ext4 image file
+# living on the NVMe (NTFS) disk. The chain is:
+#
+#   postgres-0  ->  PVC data-postgres-0  ->  PV postgres-nvme (this file)
+#     ->  node path /mnt/pg-data  (via kind extraMounts)
+#       ->  host  /mnt/pg-data    (loop-mounted ext4 image)
+#         ->  /mnt/nvme/postgres-data.img  (one file on the NTFS disk)
+#
+# A dedicated StorageClass keeps this scoped to Postgres only; every other claim
+# keeps using kind's default `standard` (local-path) class on the main disk.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: postgres-local
+# No dynamic provisioning: we hand-craft the PV below. WaitForFirstConsumer lets
+# the scheduler place the pod before binding (correct for node-local volumes).
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-nvme
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: postgres-local
+  # `local` (not hostPath): the recommended type for node-attached disks. The
+  # path is the directory INSIDE the kind node (mapped there by extraMounts).
+  local:
+    path: /mnt/pg-data
+  # local volumes require explicit node affinity. Single-node kind cluster, so
+  # this targets the one node, whose name is "<cluster>-control-plane".
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - logistics-microservice-control-plane

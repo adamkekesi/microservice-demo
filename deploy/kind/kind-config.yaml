@@ -16,3 +16,10 @@ nodes:
       - containerPort: 443
         hostPort: 8443
         protocol: TCP
+    # Expose the host's loop-mounted ext4 image (living on the NVMe NTFS disk)
+    # inside the node so the Postgres static PV can bind to it. The host path
+    # must be mounted BEFORE `kind create cluster` runs. See deploy/k8s/overlays/
+    # local/postgres-nvme-pv.yaml and the README for the host-side setup.
+    extraMounts:
+      - hostPath: /mnt/pg-data
+        containerPath: /mnt/pg-data
