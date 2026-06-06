@@ -1,0 +1,42 @@
+# Hourly launcher — the resumability mechanism. At the top of every hour it
+# deletes the previous TestRun (which garbage-collects its runner pods) and
+# applies a fresh one. Because scenarios.js derives its visitors/sec from the
+# wall clock, each launch runs at the level appropriate for the current hour;
+# if the cluster was down, the next tick simply resumes at the correct level.
+#
+# The TestRun manifest is mounted from the k6-testrun-manifest ConfigMap, which
+# `make soak-up` creates from loadtest/k8s/testrun.yaml.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k6-load-launcher
+  namespace: logistics
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: k6-soak
+          restartPolicy: OnFailure
+          containers:
+            - name: launcher
+              # rancher/kubectl is a small, reliably-pullable kubectl image (it
+              # ships only the kubectl binary — no shell). `replace --force`
+              # deletes the existing TestRun (the operator garbage-collects its
+              # runner pods) and recreates it, in a single shell-free command —
+              # equivalent to delete + apply, which is what relaunches the run.
+              image: rancher/kubectl:v1.29.2
+              command: ["kubectl"]
+              args: ["replace", "--force", "-n", "logistics", "-f", "/manifests/testrun.yaml"]
+              volumeMounts:
+                - name: testrun
+                  mountPath: /manifests
+          volumes:
+            - name: testrun
+              configMap:
+                name: k6-testrun-manifest

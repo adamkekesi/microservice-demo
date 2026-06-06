@@ -58,6 +58,11 @@ type Repository interface {
 	GetReservation(ctx context.Context, id string) (*model.Reservation, error)
 	Commit(ctx context.Context, id string, now time.Time) (*model.Reservation, error)
 	Release(ctx context.Context, id string) (*model.Reservation, error)
+	// DeleteReservation removes a single reservation row by id.
+	DeleteReservation(ctx context.Context, id string) error
+	// PurgeTerminalReservationsBefore bulk-deletes terminal (COMMITTED/RELEASED)
+	// reservations created before the cutoff. Returns rows deleted.
+	PurgeTerminalReservationsBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 type repo struct{ db *gorm.DB }
@@ -265,6 +270,18 @@ func (r *repo) GetReservation(ctx context.Context, id string) (*model.Reservatio
 		return nil, err
 	}
 	return &res, nil
+}
+
+func (r *repo) DeleteReservation(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&model.Reservation{}).Error
+}
+
+func (r *repo) PurgeTerminalReservationsBefore(ctx context.Context, before time.Time) (int64, error) {
+	terminal := []model.ReservationStatus{model.StatusCommitted, model.StatusReleased}
+	res := r.db.WithContext(ctx).
+		Where("status IN ? AND created_at < ?", terminal, before).
+		Delete(&model.Reservation{})
+	return res.RowsAffected, res.Error
 }
 
 // Commit decrements on-hand and marks the reservation COMMITTED, inside a

@@ -87,3 +87,22 @@ func (h *Handler) CreateUser(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, resp)
 }
+
+// DeleteUser removes a user by id. Admin only.
+func (h *Handler) DeleteUser(c *gin.Context) {
+	if err := h.svc.DeleteUser(c.Request.Context(), c.Param("id")); err != nil {
+		apperror.Respond(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// PurgeUsers bulk-deletes old customer accounts (retention sweep). Admin only.
+func (h *Handler) PurgeUsers(c *gin.Context) {
+	resp, err := h.svc.PurgeUsers(c.Request.Context(), c.Query("before"))
+	if err != nil {
+		apperror.Respond(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}

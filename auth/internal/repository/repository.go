@@ -5,6 +5,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/adamkekesi/microservice-demo/auth/internal/model"
 	"github.com/adamkekesi/microservice-demo/platform/authn"
@@ -17,6 +18,11 @@ type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (*model.User, error)
 	GetByID(ctx context.Context, id string) (*model.User, error)
 	AdminExists(ctx context.Context) (bool, error)
+	// DeleteByID removes a single user row by id.
+	DeleteByID(ctx context.Context, id string) error
+	// PurgeCustomersBefore bulk-deletes customer accounts created before the
+	// cutoff (never operators/admins). Returns rows deleted.
+	PurgeCustomersBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 // SigningKeyRepository abstracts persistence of the active signing keypair.
@@ -57,6 +63,17 @@ func (r *userRepo) AdminExists(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (r *userRepo) DeleteByID(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&model.User{}).Error
+}
+
+func (r *userRepo) PurgeCustomersBefore(ctx context.Context, before time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Where("role = ? AND created_at < ?", authn.RoleCustomer, before).
+		Delete(&model.User{})
+	return res.RowsAffected, res.Error
 }
 
 type signingKeyRepo struct{ db *gorm.DB }

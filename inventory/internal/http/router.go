@@ -71,6 +71,10 @@ func NewRouter(d Deps) *gin.Engine {
 	authed.GET("/reservations/:id", h.GetReservation)
 	authed.POST("/reservations/:id/commit", h.CommitReservation)
 	authed.POST("/reservations/:id/release", h.ReleaseReservation)
+	// Bulk retention sweep (operator/admin, enforced in the service) registered
+	// before /:id so DELETE /reservations isn't shadowed by the param route.
+	authed.DELETE("/reservations", h.PurgeReservations)
+	authed.DELETE("/reservations/:id", h.DeleteReservation)
 
 	return r
 }

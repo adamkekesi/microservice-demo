@@ -54,6 +54,17 @@ paths:
         "404": { description: "NOT_FOUND (unknown item/warehouse, from Inventory)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: "INSUFFICIENT_STOCK (no shipment created)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "502": { description: "DEPENDENCY_UNAVAILABLE (Inventory unreachable; no shipment created)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [shipments]
+      summary: Bulk-purge terminal shipments created before a cutoff (operator/admin)
+      description: "Retention sweep: deletes CONFIRMED/CANCELLED shipments (and their history) created before `before`."
+      parameters:
+        - { name: before, in: query, required: true, schema: { type: string, format: date-time }, description: "RFC3339 cutoff; only shipments older than this are purged" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Purge" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /shipments/{id}:
     get:
       tags: [shipments]
@@ -64,6 +75,17 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [shipments]
+      summary: Delete a terminal shipment (owner or operator/admin)
+      description: "Deletes a CONFIRMED/CANCELLED shipment and its history. A PENDING shipment is refused (409); confirm or cancel it first."
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "INVALID_STATE_TRANSITION (cannot delete a PENDING shipment)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   /shipments/{id}/confirm:
     post:
       tags: [shipments]
@@ -133,5 +155,9 @@ components:
         destination_address: { type: string }
         reservation_id: { type: string, format: uuid }
         created_at: { type: string, format: date-time }
+    Purge:
+      type: object
+      properties:
+        deleted: { type: integer, description: number of rows removed }
 security:
   - bearerAuth: []

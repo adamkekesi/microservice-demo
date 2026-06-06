@@ -63,6 +63,11 @@ type LoginResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
+// PurgeResponse reports how many rows a bulk purge removed.
+type PurgeResponse struct {
+	Deleted int64 `json:"deleted"`
+}
+
 // ToResponse projects a User to its public representation.
 func (u *User) ToResponse() UserResponse {
 	return UserResponse{ID: u.ID, Email: u.Email, Role: string(u.Role)}

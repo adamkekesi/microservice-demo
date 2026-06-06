@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/adamkekesi/microservice-demo/platform/apperror"
 	"github.com/adamkekesi/microservice-demo/platform/authn"
@@ -77,6 +78,22 @@ func (m *mockRepo) List(_ context.Context, ownerID string, all bool, _, _ int) (
 		}
 	}
 	return out, nil
+}
+
+func (m *mockRepo) Delete(_ context.Context, id string) error {
+	delete(m.shipments, id)
+	return nil
+}
+
+func (m *mockRepo) PurgeTerminalBefore(_ context.Context, before time.Time) (int64, error) {
+	var n int64
+	for id, s := range m.shipments {
+		if (s.Status == model.StatusConfirmed || s.Status == model.StatusCancelled) && s.CreatedAt.Before(before) {
+			delete(m.shipments, id)
+			n++
+		}
+	}
+	return n, nil
 }
 
 // --- helpers ---
@@ -328,4 +345,77 @@ func TestGetShipment_NotFound(t *testing.T) {
 	svc := New(newMockRepo(), &fakeInventory{}, nil)
 	_, err := svc.GetShipment(ctxWithClaims(uuid.NewString(), authn.RoleCustomer), uuid.NewString())
 	requireAppError(t, err, apperror.CodeNotFound, 404)
+}
+
+// --- delete ---
+
+func TestDeleteShipment_Success(t *testing.T) {
+	repo := newMockRepo()
+	owner := uuid.NewString()
+	sh := seedShipment(repo, owner, model.StatusConfirmed)
+	svc := New(repo, &fakeInventory{}, nil)
+
+	err := svc.DeleteShipment(ctxWithClaims(owner, authn.RoleCustomer), sh.ID)
+	require.NoError(t, err)
+	require.Empty(t, repo.shipments)
+}
+
+func TestDeleteShipment_PendingIsConflict(t *testing.T) {
+	repo := newMockRepo()
+	owner := uuid.NewString()
+	sh := seedShipment(repo, owner, model.StatusPending)
+	svc := New(repo, &fakeInventory{}, nil)
+
+	err := svc.DeleteShipment(ctxWithClaims(owner, authn.RoleCustomer), sh.ID)
+	requireAppError(t, err, "INVALID_STATE_TRANSITION", 409)
+	require.Len(t, repo.shipments, 1, "pending shipment must not be deleted")
+}
+
+func TestDeleteShipment_OwnershipAuthz(t *testing.T) {
+	repo := newMockRepo()
+	owner := uuid.NewString()
+	sh := seedShipment(repo, owner, model.StatusCancelled)
+	svc := New(repo, &fakeInventory{}, nil)
+
+	err := svc.DeleteShipment(ctxWithClaims(uuid.NewString(), authn.RoleCustomer), sh.ID)
+	requireAppError(t, err, apperror.CodeForbidden, 403)
+
+	err = svc.DeleteShipment(ctxWithClaims(uuid.NewString(), authn.RoleOperator), sh.ID)
+	require.NoError(t, err, "operator can delete any terminal shipment")
+}
+
+func TestDeleteShipment_NotFound(t *testing.T) {
+	svc := New(newMockRepo(), &fakeInventory{}, nil)
+	err := svc.DeleteShipment(ctxWithClaims(uuid.NewString(), authn.RoleCustomer), uuid.NewString())
+	requireAppError(t, err, apperror.CodeNotFound, 404)
+}
+
+// --- purge ---
+
+func TestPurgeShipments_RequiresOperatorOrAdmin(t *testing.T) {
+	svc := New(newMockRepo(), &fakeInventory{}, nil)
+	_, err := svc.PurgeShipments(ctxWithClaims(uuid.NewString(), authn.RoleCustomer), time.Now().Format(time.RFC3339))
+	requireAppError(t, err, apperror.CodeForbidden, 403)
+}
+
+func TestPurgeShipments_InvalidBefore(t *testing.T) {
+	svc := New(newMockRepo(), &fakeInventory{}, nil)
+	_, err := svc.PurgeShipments(ctxWithClaims(uuid.NewString(), authn.RoleAdmin), "not-a-time")
+	requireAppError(t, err, apperror.CodeValidation, 400)
+}
+
+func TestPurgeShipments_DeletesOnlyTerminal(t *testing.T) {
+	repo := newMockRepo()
+	owner := uuid.NewString()
+	seedShipment(repo, owner, model.StatusConfirmed)
+	seedShipment(repo, owner, model.StatusCancelled)
+	pending := seedShipment(repo, owner, model.StatusPending)
+	svc := New(repo, &fakeInventory{}, nil)
+
+	resp, err := svc.PurgeShipments(ctxWithClaims(uuid.NewString(), authn.RoleOperator), time.Now().Format(time.RFC3339))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, resp.Deleted)
+	require.Len(t, repo.shipments, 1)
+	_, stillThere := repo.shipments[pending.ID]
+	require.True(t, stillThere, "pending shipment must survive the purge")
 }

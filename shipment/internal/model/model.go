@@ -67,6 +67,11 @@ type ShipmentResponse struct {
 	CreatedAt          string `json:"created_at"`
 }
 
+// PurgeResponse reports how many rows a bulk purge removed.
+type PurgeResponse struct {
+	Deleted int64 `json:"deleted"`
+}
+
 // ToResponse projects a Shipment to its public representation.
 func (s *Shipment) ToResponse() ShipmentResponse {
 	return ShipmentResponse{

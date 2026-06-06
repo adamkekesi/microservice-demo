@@ -1,0 +1,57 @@
+# Grafana k6 operator custom resource. The operator spawns `parallelism` runner
+# pods, each running one execution segment of loadtest/k6/scenarios.js, so the
+# diurnal visitors/sec configured below is split across the pods.
+#
+# This manifest is re-applied every hour by the k6-load-launcher CronJob (see
+# loadtest/k8s/soak/). The script itself picks the peak vs off-peak rate from
+# the wall clock at launch, so each hour runs at the right level and the soak is
+# resumable: a restart just resumes at the correct level for the current time.
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: logistics-load
+  namespace: logistics
+spec:
+  parallelism: 4
+  # No `cleanup: post`: the launcher deletes the prior TestRun (which garbage-
+  # collects its runner pods) before applying the next, and keeping the finished
+  # pods lets `make soak-status` / `kubectl logs` show the last summary.
+  script:
+    configMap:
+      name: k6-load-test
+      file: scenarios.js
+  runner:
+    env:
+      # Target the in-cluster ingress gateway (same routes as `make smoke-k8s`).
+      - name: K6_BASE_URL
+        value: http://ingress-nginx-controller.ingress-nginx.svc
+      # Diurnal profile: 40 visitors/s during 08:00-12:00, 10/s otherwise.
+      - name: VISITORS_PEAK
+        value: "40"
+      - name: VISITORS_OFF
+        value: "10"
+      - name: PEAK_START_HOUR
+        value: "8"
+      - name: PEAK_END_HOUR
+        value: "12"
+      # Hours to add to UTC so "08:00" matches your local clock (e.g. 2 = CEST).
+      - name: TZ_OFFSET_HOURS
+        value: "0"
+      # Fraction of visitors who place (and then delete) an order.
+      - name: ORDER_RATE
+        value: "0.3"
+      # A touch under an hour so the launcher recycles cleanly each hour.
+      - name: RUN_DURATION
+        value: "58m"
+      # Local-dev admin creds (match deploy/k8s/overlays/local app-secrets).
+      - name: ADMIN_EMAIL
+        value: admin@example.com
+      - name: ADMIN_PASSWORD
+        value: changeme123
+    resources:
+      requests:
+        cpu: 150m
+        memory: 192Mi
+      limits:
+        cpu: "1"
+        memory: 768Mi
