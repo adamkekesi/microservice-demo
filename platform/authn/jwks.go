@@ -91,6 +91,19 @@ func NewVerifier(jwksURL, issuer string, ttl time.Duration) *Verifier {
 	}
 }
 
+// NewLocalVerifier builds a verifier seeded with in-memory keys and no JWKS URL.
+// The Auth service uses it to verify its own tokens without an HTTP round-trip
+// to itself. Unknown kids still fail closed (the empty URL fetch errors).
+func NewLocalVerifier(issuer string, keys map[string]*rsa.PublicKey) *Verifier {
+	return &Verifier{
+		issuer:    issuer,
+		ttl:       100 * 365 * 24 * time.Hour, // effectively never expires
+		client:    &http.Client{Timeout: 10 * time.Second},
+		keys:      keys,
+		fetchedAt: time.Now(),
+	}
+}
+
 // Prime fetches the JWKS once (used at startup and for readiness).
 func (v *Verifier) Prime(ctx context.Context) error { return v.fetch(ctx) }
 

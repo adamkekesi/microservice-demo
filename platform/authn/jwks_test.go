@@ -16,8 +16,8 @@ import (
 // can assert re-fetch behaviour.
 type jwksServer struct {
 	*httptest.Server
-	keys     atomic.Value // JWKS
-	fetches  atomic.Int64
+	keys    atomic.Value // JWKS
+	fetches atomic.Int64
 }
 
 func newJWKSServer(initial JWKS) *jwksServer {

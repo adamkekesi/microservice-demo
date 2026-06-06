@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS signing_keys;
+DROP TABLE IF EXISTS users;
