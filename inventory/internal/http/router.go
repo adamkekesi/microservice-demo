@@ -49,6 +49,8 @@ func NewRouter(d Deps) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	registerDocs(r) // GET /docs (Swagger UI) + GET /openapi.yaml
+
 	authed := r.Group("")
 	authed.Use(authn.RequireAuth(d.Verifier))
 

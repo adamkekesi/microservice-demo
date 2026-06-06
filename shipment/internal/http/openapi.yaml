@@ -1,0 +1,135 @@
+openapi: 3.0.3
+info:
+  title: Shipment Service API
+  version: 1.0.0
+  description: >
+    The saga orchestrator: creating a shipment reserves stock in Inventory;
+    confirm commits it, cancel releases it. Hand-maintained spec — served at
+    /openapi.yaml with a Swagger UI at /docs.
+servers:
+  - url: http://localhost:8003
+    description: Local (docker-compose)
+tags:
+  - name: shipments
+  - name: ops
+paths:
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /ready:
+    get:
+      tags: [ops]
+      summary: Readiness probe (DB + JWKS)
+      security: []
+      responses:
+        "200": { description: Ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "503": { description: Not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /shipments:
+    get:
+      tags: [shipments]
+      summary: List the caller's shipments (operator/admin may pass all=true)
+      parameters:
+        - { name: all, in: query, required: false, schema: { type: boolean }, description: "operator/admin only" }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Shipment" } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [shipments]
+      summary: Create a shipment (reserves stock; status PENDING)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateShipment" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Shipment" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { description: "NOT_FOUND (unknown item/warehouse, from Inventory)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "INSUFFICIENT_STOCK (no shipment created)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: "DEPENDENCY_UNAVAILABLE (Inventory unreachable; no shipment created)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /shipments/{id}:
+    get:
+      tags: [shipments]
+      summary: Get a shipment (owner or operator/admin)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Shipment" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /shipments/{id}/confirm:
+    post:
+      tags: [shipments]
+      summary: Confirm a PENDING shipment (commits the reservation)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: CONFIRMED (idempotent), content: { application/json: { schema: { $ref: "#/components/schemas/Shipment" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "INVALID_STATE_TRANSITION | RESERVATION_EXPIRED (shipment cancelled)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: "DEPENDENCY_UNAVAILABLE (left PENDING; retry)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /shipments/{id}/cancel:
+    post:
+      tags: [shipments]
+      summary: Cancel a PENDING shipment (releases the reservation)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: CANCELLED (idempotent), content: { application/json: { schema: { $ref: "#/components/schemas/Shipment" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "INVALID_STATE_TRANSITION (cannot cancel CONFIRMED)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: "DEPENDENCY_UNAVAILABLE (left PENDING; retry)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    ValidationError: { description: VALIDATION_ERROR, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unauthenticated: { description: UNAUTHENTICATED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Forbidden: { description: FORBIDDEN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  schemas:
+    Status:
+      type: object
+      properties: { status: { type: string, example: ok } }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object, additionalProperties: true, nullable: true }
+    CreateShipment:
+      type: object
+      required: [item_id, warehouse_id, quantity, destination_address]
+      properties:
+        item_id: { type: string, format: uuid }
+        warehouse_id: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1 }
+        destination_address: { type: string, minLength: 1 }
+    Shipment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING, CONFIRMED, CANCELLED] }
+        item_id: { type: string, format: uuid }
+        warehouse_id: { type: string, format: uuid }
+        quantity: { type: integer }
+        destination_address: { type: string }
+        reservation_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+security:
+  - bearerAuth: []

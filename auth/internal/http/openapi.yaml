@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: Auth Service API
+  version: 1.0.0
+  description: >
+    Issues RS256 JWTs and publishes its public keys via JWKS. The only service
+    that holds the signing private key. Hand-maintained spec — served at
+    /openapi.yaml with a Swagger UI at /docs.
+servers:
+  - url: http://localhost:8001
+    description: Local (docker-compose)
+tags:
+  - name: auth
+  - name: keys
+  - name: ops
+paths:
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+  /ready:
+    get:
+      tags: [ops]
+      summary: Readiness probe (DB reachable)
+      security: []
+      responses:
+        "200": { description: Ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "503": { description: Not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /.well-known/jwks.json:
+    get:
+      tags: [keys]
+      summary: Public JWKS (public-key material only)
+      security: []
+      responses:
+        "200":
+          description: JSON Web Key Set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JWKS" }
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Register a customer
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/UserResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409": { description: "EMAIL_TAKEN", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in, returns an access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/LoginResponse" } } } }
+        "401": { description: "INVALID_CREDENTIALS (identical for unknown email or wrong password)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Current user
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/UserResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /auth/users:
+    post:
+      tags: [auth]
+      summary: Create a user with an explicit role (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/UserResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "EMAIL_TAKEN", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    ValidationError:
+      description: VALIDATION_ERROR
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthenticated:
+      description: UNAUTHENTICATED
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: FORBIDDEN
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  schemas:
+    Status:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+            details: { type: object, additionalProperties: true, nullable: true }
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    CreateUserRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        role: { type: string, enum: [customer, operator, admin] }
+    UserResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { type: string, enum: [customer, operator, admin] }
+    LoginResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, example: 900 }
+    JWKS:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kty: { type: string, example: RSA }
+              use: { type: string, example: sig }
+              alg: { type: string, example: RS256 }
+              kid: { type: string, example: auth-key-1 }
+              "n": { type: string }
+              e: { type: string, example: AQAB }
+security:
+  - bearerAuth: []

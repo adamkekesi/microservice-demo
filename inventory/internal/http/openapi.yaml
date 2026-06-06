@@ -1,0 +1,229 @@
+openapi: 3.0.3
+info:
+  title: Inventory Service API
+  version: 1.0.0
+  description: >
+    Warehouses, items, stock, and the reserve/commit/release stock math.
+    Verifies JWTs locally via Auth's cached JWKS. Hand-maintained spec — served
+    at /openapi.yaml with a Swagger UI at /docs.
+servers:
+  - url: http://localhost:8002
+    description: Local (docker-compose)
+tags:
+  - name: warehouses
+  - name: items
+  - name: stock
+  - name: reservations
+  - name: ops
+paths:
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /ready:
+    get:
+      tags: [ops]
+      summary: Readiness probe (DB + JWKS)
+      security: []
+      responses:
+        "200": { description: Ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "503": { description: Not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /warehouses:
+    get:
+      tags: [warehouses]
+      summary: List warehouses
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Warehouse" } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [warehouses]
+      summary: Create a warehouse (operator/admin)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateWarehouse" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Warehouse" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "CODE_TAKEN", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /items:
+    get:
+      tags: [items]
+      summary: List items
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Item" } } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [items]
+      summary: Create an item (operator/admin)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateItem" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Item" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "SKU_TAKEN", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /stock:
+    get:
+      tags: [stock]
+      summary: Stock levels for a (warehouse, item) pair
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: item_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StockView" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [stock]
+      summary: Set on-hand to an absolute value (operator/admin)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SetStock" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SetStockResponse" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "STOCK_BELOW_RESERVED (details.reserved)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /reservations:
+    post:
+      tags: [reservations]
+      summary: Reserve stock (idempotent via idempotency_key)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateReservation" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Reservation" } } } }
+        "200": { description: "Existing reservation returned (idempotent hit)", content: { application/json: { schema: { $ref: "#/components/schemas/Reservation" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "INSUFFICIENT_STOCK (details.available, details.requested)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /reservations/{id}:
+    get:
+      tags: [reservations]
+      summary: Get a reservation (owner or operator/admin)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Reservation" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /reservations/{id}/commit:
+    post:
+      tags: [reservations]
+      summary: Commit a reservation (decrements on-hand)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Committed (idempotent), content: { application/json: { schema: { $ref: "#/components/schemas/Reservation" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "RESERVATION_EXPIRED | RESERVATION_NOT_ACTIVE | STOCK_UNDERFLOW", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /reservations/{id}/release:
+    post:
+      tags: [reservations]
+      summary: Release a PENDING reservation
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Released (idempotent), content: { application/json: { schema: { $ref: "#/components/schemas/Reservation" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "RESERVATION_ALREADY_COMMITTED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    ValidationError: { description: VALIDATION_ERROR, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unauthenticated: { description: UNAUTHENTICATED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Forbidden: { description: FORBIDDEN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  schemas:
+    Status:
+      type: object
+      properties: { status: { type: string, example: ok } }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object, additionalProperties: true, nullable: true }
+    CreateWarehouse:
+      type: object
+      required: [code, name]
+      properties: { code: { type: string }, name: { type: string } }
+    Warehouse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+    CreateItem:
+      type: object
+      required: [sku, name]
+      properties: { sku: { type: string }, name: { type: string } }
+    Item:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        sku: { type: string }
+        name: { type: string }
+    SetStock:
+      type: object
+      required: [warehouse_id, item_id, quantity_on_hand]
+      properties:
+        warehouse_id: { type: string, format: uuid }
+        item_id: { type: string, format: uuid }
+        quantity_on_hand: { type: integer, minimum: 0 }
+    SetStockResponse:
+      type: object
+      properties:
+        warehouse_id: { type: string, format: uuid }
+        item_id: { type: string, format: uuid }
+        quantity_on_hand: { type: integer }
+    StockView:
+      type: object
+      properties:
+        warehouse_id: { type: string, format: uuid }
+        item_id: { type: string, format: uuid }
+        quantity_on_hand: { type: integer }
+        quantity_reserved: { type: integer }
+        quantity_available: { type: integer }
+    CreateReservation:
+      type: object
+      required: [warehouse_id, item_id, quantity]
+      properties:
+        warehouse_id: { type: string, format: uuid }
+        item_id: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1 }
+        idempotency_key: { type: string, nullable: true }
+        ttl_seconds: { type: integer, minimum: 1, nullable: true }
+    Reservation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING, COMMITTED, RELEASED] }
+        warehouse_id: { type: string, format: uuid }
+        item_id: { type: string, format: uuid }
+        quantity: { type: integer }
+        expires_at: { type: string, format: date-time }
+security:
+  - bearerAuth: []
