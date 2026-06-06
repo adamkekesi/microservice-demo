@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS reservations;
+DROP TABLE IF EXISTS stock;
+DROP TABLE IF EXISTS items;
+DROP TABLE IF EXISTS warehouses;

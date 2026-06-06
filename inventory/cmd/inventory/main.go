@@ -1,0 +1,75 @@
+// Command inventory runs the Inventory service: stock, reservations and the
+// reserve/commit/release stock math. See entrypoint sequence in plan §3.
+package main
+
+import (
+	"context"
+	"path/filepath"
+
+	invhttp "github.com/adamkekesi/microservice-demo/inventory/internal/http"
+	"github.com/adamkekesi/microservice-demo/inventory/internal/repository"
+	"github.com/adamkekesi/microservice-demo/inventory/internal/service"
+	"github.com/adamkekesi/microservice-demo/platform/authn"
+	"github.com/adamkekesi/microservice-demo/platform/config"
+	"github.com/adamkekesi/microservice-demo/platform/database"
+	"github.com/adamkekesi/microservice-demo/platform/httpserver"
+	"github.com/adamkekesi/microservice-demo/platform/observability"
+	"go.uber.org/zap"
+)
+
+func main() {
+	port := config.String("PORT", "8002")
+	dsn := config.MustString("DATABASE_URL")
+	jwksURL := config.MustString("AUTH_JWKS_URL")
+	issuer := config.String("JWT_ISSUER", "auth-service")
+	jwksTTL := config.Seconds("JWKS_CACHE_TTL_SECONDS", 600)
+	reservationTTL := config.Seconds("RESERVATION_TTL_SECONDS", 900)
+	serviceName := config.String("DD_SERVICE", "inventory-service")
+
+	observability.InitTracer()
+	defer observability.StopTracer()
+	defer observability.InitProfiler()()
+	logger := observability.NewLogger()
+	defer func() { _ = logger.Sync() }()
+
+	metrics, err := observability.NewMetrics()
+	if err != nil {
+		logger.Warn("metrics client init failed (continuing without metrics)", zap.Error(err))
+	}
+	defer metrics.Close()
+
+	db, err := database.Connect(serviceName, dsn)
+	if err != nil {
+		logger.Fatal("connect database", zap.Error(err))
+	}
+	if err := database.RunMigrations(dsn, migrationsDir()); err != nil {
+		logger.Fatal("run migrations", zap.Error(err))
+	}
+
+	verifier := authn.NewVerifier(jwksURL, issuer, jwksTTL)
+	if err := verifier.Prime(context.Background()); err != nil {
+		logger.Warn("initial JWKS fetch failed (will retry lazily)", zap.Error(err))
+	}
+
+	svc := service.New(repository.New(db), reservationTTL, metrics)
+	router := invhttp.NewRouter(invhttp.Deps{
+		Service:     svc,
+		Verifier:    verifier,
+		DB:          db,
+		Logger:      logger,
+		ServiceName: serviceName,
+	})
+
+	logger.Info("inventory service starting", zap.String("port", port))
+	if err := httpserver.Run(router, port, nil); err != nil {
+		logger.Fatal("http server", zap.Error(err))
+	}
+}
+
+func migrationsDir() string {
+	dir := config.String("MIGRATIONS_DIR", "migrations")
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}

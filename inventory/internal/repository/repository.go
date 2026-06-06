@@ -1,0 +1,349 @@
+// Package repository owns Inventory's GORM data access, including the
+// row-locked transactions that make the stock math correct under concurrency
+// (Feature Spec §4.2). Domain conflicts decided inside a transaction are
+// returned as *apperror.AppError; plain not-found is returned as
+// gorm.ErrRecordNotFound for the service layer to map.
+package repository
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/adamkekesi/microservice-demo/inventory/internal/model"
+	"github.com/adamkekesi/microservice-demo/inventory/internal/stock"
+	"github.com/adamkekesi/microservice-demo/platform/apperror"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// Conflict subcodes (Feature Spec §4).
+const (
+	CodeCodeTaken                   = "CODE_TAKEN"
+	CodeSKUTaken                    = "SKU_TAKEN"
+	CodeInsufficientStock           = "INSUFFICIENT_STOCK"
+	CodeStockBelowReserved          = "STOCK_BELOW_RESERVED"
+	CodeStockUnderflow              = "STOCK_UNDERFLOW"
+	CodeReservationExpired          = "RESERVATION_EXPIRED"
+	CodeReservationNotActive        = "RESERVATION_NOT_ACTIVE"
+	CodeReservationAlreadyCommitted = "RESERVATION_ALREADY_COMMITTED"
+)
+
+// ReserveParams carries everything needed to create a reservation.
+type ReserveParams struct {
+	WarehouseID    string
+	ItemID         string
+	Quantity       int
+	IdempotencyKey string // empty when none
+	ReservedBy     string
+	ExpiresAt      time.Time
+	Now            time.Time
+}
+
+// Repository is the Inventory data-access contract.
+type Repository interface {
+	CreateWarehouse(ctx context.Context, w *model.Warehouse) error
+	ListWarehouses(ctx context.Context) ([]model.Warehouse, error)
+	WarehouseExists(ctx context.Context, id string) (bool, error)
+
+	CreateItem(ctx context.Context, i *model.Item) error
+	ListItems(ctx context.Context) ([]model.Item, error)
+	ItemExists(ctx context.Context, id string) (bool, error)
+
+	SetStock(ctx context.Context, warehouseID, itemID string, onHand int, now time.Time) (*model.Stock, error)
+	GetStockView(ctx context.Context, warehouseID, itemID string) (onHand, reserved, available int, err error)
+
+	Reserve(ctx context.Context, p ReserveParams) (res *model.Reservation, created bool, err error)
+	GetReservation(ctx context.Context, id string) (*model.Reservation, error)
+	Commit(ctx context.Context, id string, now time.Time) (*model.Reservation, error)
+	Release(ctx context.Context, id string) (*model.Reservation, error)
+}
+
+type repo struct{ db *gorm.DB }
+
+// New builds a GORM-backed Repository.
+func New(db *gorm.DB) Repository { return &repo{db: db} }
+
+func (r *repo) CreateWarehouse(ctx context.Context, w *model.Warehouse) error {
+	return r.db.WithContext(ctx).Create(w).Error
+}
+
+func (r *repo) ListWarehouses(ctx context.Context) ([]model.Warehouse, error) {
+	var out []model.Warehouse
+	return out, r.db.WithContext(ctx).Order("created_at").Find(&out).Error
+}
+
+func (r *repo) WarehouseExists(ctx context.Context, id string) (bool, error) {
+	return r.exists(ctx, &model.Warehouse{}, id)
+}
+
+func (r *repo) CreateItem(ctx context.Context, i *model.Item) error {
+	return r.db.WithContext(ctx).Create(i).Error
+}
+
+func (r *repo) ListItems(ctx context.Context) ([]model.Item, error) {
+	var out []model.Item
+	return out, r.db.WithContext(ctx).Order("created_at").Find(&out).Error
+}
+
+func (r *repo) ItemExists(ctx context.Context, id string) (bool, error) {
+	return r.exists(ctx, &model.Item{}, id)
+}
+
+func (r *repo) exists(ctx context.Context, m any, id string) (bool, error) {
+	var count int64
+	if err := r.db.WithContext(ctx).Model(m).Where("id = ?", id).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// sumActive loads the PENDING reservations for a (warehouse, item) pair and
+// sums the active ones via the pure stock math, so the availability rule lives
+// in exactly one place (Spec §4.2). Callers run this inside the locked tx.
+func sumActive(tx *gorm.DB, warehouseID, itemID string, now time.Time) (int, error) {
+	var rs []model.Reservation
+	if err := tx.Where("warehouse_id = ? AND item_id = ? AND status = ?",
+		warehouseID, itemID, model.StatusPending).Find(&rs).Error; err != nil {
+		return 0, err
+	}
+	return stock.Reserved(rs, now), nil
+}
+
+func (r *repo) GetStockView(ctx context.Context, warehouseID, itemID string) (int, int, int, error) {
+	var stock model.Stock
+	err := r.db.WithContext(ctx).
+		Where("warehouse_id = ? AND item_id = ?", warehouseID, itemID).First(&stock).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, 0, 0, nil // no row yet => all zero (Spec §4.3)
+	}
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	reserved, err := sumActive(r.db.WithContext(ctx), warehouseID, itemID, time.Now())
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return stock.QuantityOnHand, reserved, stock.QuantityOnHand - reserved, nil
+}
+
+// SetStock upserts the stock row to an absolute on-hand value, rejecting a
+// value below the currently reserved quantity (Spec §4.3).
+func (r *repo) SetStock(ctx context.Context, warehouseID, itemID string, onHand int, now time.Time) (*model.Stock, error) {
+	var result *model.Stock
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var stock model.Stock
+		serr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("warehouse_id = ? AND item_id = ?", warehouseID, itemID).First(&stock).Error
+		exists := serr == nil
+		if serr != nil && !errors.Is(serr, gorm.ErrRecordNotFound) {
+			return serr
+		}
+
+		reserved, e := sumActive(tx, warehouseID, itemID, now)
+		if e != nil {
+			return e
+		}
+		if onHand < reserved {
+			return apperror.Conflict(CodeStockBelowReserved,
+				"cannot set on-hand below the currently reserved quantity").
+				WithDetails(map[string]any{"reserved": reserved})
+		}
+
+		if exists {
+			stock.QuantityOnHand = onHand
+			if e := tx.Save(&stock).Error; e != nil {
+				return e
+			}
+		} else {
+			stock = model.Stock{
+				ID:             uuid.NewString(),
+				WarehouseID:    warehouseID,
+				ItemID:         itemID,
+				QuantityOnHand: onHand,
+			}
+			if e := tx.Create(&stock).Error; e != nil {
+				return e
+			}
+		}
+		result = &stock
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Reserve creates a PENDING reservation inside a transaction that locks the
+// stock row, so two concurrent reserves that jointly exceed availability
+// produce exactly one success and one INSUFFICIENT_STOCK (Spec §4.2).
+func (r *repo) Reserve(ctx context.Context, p ReserveParams) (*model.Reservation, bool, error) {
+	var result *model.Reservation
+	created := false
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Acquire the stock-row lock first — this is the serialization point.
+		var stock model.Stock
+		onHand := 0
+		serr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("warehouse_id = ? AND item_id = ?", p.WarehouseID, p.ItemID).First(&stock).Error
+		switch {
+		case serr == nil:
+			onHand = stock.QuantityOnHand
+		case errors.Is(serr, gorm.ErrRecordNotFound):
+			onHand = 0
+		default:
+			return serr
+		}
+
+		// Re-check idempotency AFTER the lock so concurrent same-key requests
+		// converge on the same reservation rather than double-reserving.
+		if p.IdempotencyKey != "" {
+			var existing model.Reservation
+			e := tx.Where("idempotency_key = ?", p.IdempotencyKey).First(&existing).Error
+			if e == nil {
+				result = &existing
+				created = false
+				return nil
+			}
+			if !errors.Is(e, gorm.ErrRecordNotFound) {
+				return e
+			}
+		}
+
+		reserved, e := sumActive(tx, p.WarehouseID, p.ItemID, p.Now)
+		if e != nil {
+			return e
+		}
+		available := onHand - reserved
+		if available < p.Quantity {
+			return apperror.Conflict(CodeInsufficientStock, "insufficient stock to reserve").
+				WithDetails(map[string]any{"available": available, "requested": p.Quantity})
+		}
+
+		var keyPtr *string
+		if p.IdempotencyKey != "" {
+			k := p.IdempotencyKey
+			keyPtr = &k
+		}
+		res := &model.Reservation{
+			ID:             uuid.NewString(),
+			WarehouseID:    p.WarehouseID,
+			ItemID:         p.ItemID,
+			Quantity:       p.Quantity,
+			Status:         model.StatusPending,
+			IdempotencyKey: keyPtr,
+			ReservedBy:     p.ReservedBy,
+			ExpiresAt:      p.ExpiresAt,
+		}
+		if e := tx.Create(res).Error; e != nil {
+			if errors.Is(e, gorm.ErrDuplicatedKey) && p.IdempotencyKey != "" {
+				var existing model.Reservation
+				if e2 := tx.Where("idempotency_key = ?", p.IdempotencyKey).First(&existing).Error; e2 == nil {
+					result = &existing
+					created = false
+					return nil
+				}
+			}
+			return e
+		}
+		result = res
+		created = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return result, created, nil
+}
+
+func (r *repo) GetReservation(ctx context.Context, id string) (*model.Reservation, error) {
+	var res model.Reservation
+	if err := r.db.WithContext(ctx).First(&res, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// Commit decrements on-hand and marks the reservation COMMITTED, inside a
+// transaction that locks the reservation and stock rows (Spec §4.3).
+func (r *repo) Commit(ctx context.Context, id string, now time.Time) (*model.Reservation, error) {
+	var result *model.Reservation
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var res model.Reservation
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&res, "id = ?", id).Error; e != nil {
+			return e
+		}
+		switch res.Status {
+		case model.StatusCommitted:
+			result = &res // idempotent no-op
+			return nil
+		case model.StatusReleased:
+			return apperror.Conflict(CodeReservationNotActive, "reservation is not active")
+		case model.StatusPending:
+			if !res.ExpiresAt.After(now) {
+				return apperror.Conflict(CodeReservationExpired, "reservation has expired")
+			}
+			var stock model.Stock
+			if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("warehouse_id = ? AND item_id = ?", res.WarehouseID, res.ItemID).First(&stock).Error; e != nil {
+				if errors.Is(e, gorm.ErrRecordNotFound) {
+					return apperror.Conflict(CodeStockUnderflow, "stock row missing for commit")
+				}
+				return e
+			}
+			if stock.QuantityOnHand < res.Quantity {
+				return apperror.Conflict(CodeStockUnderflow, "on-hand is below the reservation quantity")
+			}
+			stock.QuantityOnHand -= res.Quantity
+			if e := tx.Save(&stock).Error; e != nil {
+				return e
+			}
+			res.Status = model.StatusCommitted
+			if e := tx.Save(&res).Error; e != nil {
+				return e
+			}
+			result = &res
+			return nil
+		default:
+			return apperror.Internal("unknown reservation status")
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Release marks a PENDING reservation RELEASED (Spec §4.3).
+func (r *repo) Release(ctx context.Context, id string) (*model.Reservation, error) {
+	var result *model.Reservation
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var res model.Reservation
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&res, "id = ?", id).Error; e != nil {
+			return e
+		}
+		switch res.Status {
+		case model.StatusReleased:
+			result = &res // idempotent no-op
+			return nil
+		case model.StatusCommitted:
+			return apperror.Conflict(CodeReservationAlreadyCommitted, "cannot release committed stock")
+		case model.StatusPending:
+			res.Status = model.StatusReleased
+			if e := tx.Save(&res).Error; e != nil {
+				return e
+			}
+			result = &res
+			return nil
+		default:
+			return apperror.Internal("unknown reservation status")
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
