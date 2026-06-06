@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -315,4 +316,53 @@ func TestListOwnShipments(t *testing.T) {
 	var list []model.ShipmentResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
 	require.Len(t, list, 2)
+}
+
+// Delete a terminal (CONFIRMED) shipment -> 204, row and history gone.
+func TestDeleteConfirmedShipment(t *testing.T) {
+	router, signer, _ := setup(t)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	s := createOK(t, router, cust)
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodPost, "/shipments/"+s.ID+"/confirm", cust, nil).Code)
+
+	rec := doJSON(t, router, http.MethodDelete, "/shipments/"+s.ID, cust, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.Equal(t, 0, shipmentCount(t))
+	require.Equal(t, http.StatusNotFound, doJSON(t, router, http.MethodGet, "/shipments/"+s.ID, cust, nil).Code)
+}
+
+// Deleting a PENDING shipment is refused (it still holds a reservation).
+func TestDeletePendingShipmentRejected(t *testing.T) {
+	router, signer, _ := setup(t)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	s := createOK(t, router, cust)
+
+	rec := doJSON(t, router, http.MethodDelete, "/shipments/"+s.ID, cust, nil)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	require.Equal(t, "INVALID_STATE_TRANSITION", parseErr(t, rec).Error.Code)
+	require.Equal(t, 1, shipmentCount(t))
+}
+
+// Bulk purge: operator removes terminal shipments older than the cutoff; a
+// PENDING one survives. A customer may not purge.
+func TestPurgeShipments(t *testing.T) {
+	router, signer, _ := setup(t)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cutoff := url.QueryEscape(time.Now().Add(time.Hour).Format(time.RFC3339))
+
+	confirmed := createOK(t, router, cust)
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodPost, "/shipments/"+confirmed.ID+"/confirm", cust, nil).Code)
+	createOK(t, router, cust) // left PENDING
+	require.Equal(t, 2, shipmentCount(t))
+
+	require.Equal(t, http.StatusForbidden,
+		doJSON(t, router, http.MethodDelete, "/shipments?before="+cutoff, cust, nil).Code)
+
+	rec := doJSON(t, router, http.MethodDelete, "/shipments?before="+cutoff, op, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var p model.PurgeResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
+	require.EqualValues(t, 1, p.Deleted, "only the terminal shipment is purged")
+	require.Equal(t, 1, shipmentCount(t), "the PENDING shipment survives")
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/adamkekesi/microservice-demo/platform/apperror"
 	"github.com/adamkekesi/microservice-demo/platform/authn"
@@ -189,6 +190,48 @@ func (s *Service) ListShipments(ctx context.Context, all bool, limit, offset int
 		out = append(out, shipments[i].ToResponse())
 	}
 	return out, nil
+}
+
+// DeleteShipment removes a terminal (CONFIRMED/CANCELLED) shipment. A PENDING
+// shipment still holds a reservation, so deleting it is refused with 409; the
+// caller must confirm or cancel first. Owner or operator/admin only.
+func (s *Service) DeleteShipment(ctx context.Context, id string) error {
+	sh, err := s.loadAndAuthorize(ctx, id)
+	if err != nil {
+		return err
+	}
+	if sh.Status == model.StatusPending {
+		return apperror.Conflict(codeInvalidStateTransition,
+			"cannot delete a pending shipment; confirm or cancel it first")
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return apperror.Internal("could not delete shipment").Wrap(err)
+	}
+	s.metrics.Incr("logistics.shipment.deleted", "status:"+string(sh.Status))
+	return nil
+}
+
+// PurgeShipments bulk-deletes terminal shipments created before `before`
+// (RFC3339). Operator/admin only — this is the hourly retention sweep.
+func (s *Service) PurgeShipments(ctx context.Context, before string) (*model.PurgeResponse, error) {
+	claims, ok := authn.ClaimsFrom(ctx)
+	if !ok {
+		return nil, apperror.Unauthenticated("")
+	}
+	if !claims.Role.IsOperatorOrAdmin() {
+		return nil, apperror.Forbidden("")
+	}
+	cutoff, err := time.Parse(time.RFC3339, before)
+	if err != nil {
+		return nil, apperror.Validation("before must be an RFC3339 timestamp",
+			map[string]any{"before": "required, RFC3339"})
+	}
+	n, err := s.repo.PurgeTerminalBefore(ctx, cutoff)
+	if err != nil {
+		return nil, apperror.Internal("could not purge shipments").Wrap(err)
+	}
+	s.metrics.Gauge("logistics.shipment.purged", float64(n))
+	return &model.PurgeResponse{Deleted: n}, nil
 }
 
 func (s *Service) loadAndAuthorize(ctx context.Context, id string) (*model.Shipment, error) {

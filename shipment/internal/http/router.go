@@ -57,6 +57,10 @@ func NewRouter(d Deps) *gin.Engine {
 	authed.GET("/shipments/:id", h.GetShipment)
 	authed.POST("/shipments/:id/confirm", h.ConfirmShipment)
 	authed.POST("/shipments/:id/cancel", h.CancelShipment)
+	// Bulk retention sweep (operator/admin, enforced in the service) must be
+	// registered before the /:id route so DELETE /shipments isn't shadowed.
+	authed.DELETE("/shipments", h.PurgeShipments)
+	authed.DELETE("/shipments/:id", h.DeleteShipment)
 
 	return r
 }

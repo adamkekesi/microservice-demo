@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/adamkekesi/microservice-demo/shipment/internal/model"
 	"github.com/google/uuid"
@@ -18,6 +19,11 @@ type Repository interface {
 	// Transition updates a shipment's status and appends a history row, atomically.
 	Transition(ctx context.Context, s *model.Shipment, to model.ShipmentStatus, reason *string) error
 	List(ctx context.Context, ownerID string, all bool, limit, offset int) ([]model.Shipment, error)
+	// Delete removes a shipment and its status-history rows in one transaction.
+	Delete(ctx context.Context, id string) error
+	// PurgeTerminalBefore bulk-deletes terminal (CONFIRMED/CANCELLED) shipments
+	// created before the cutoff, with their history. Returns rows deleted.
+	PurgeTerminalBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 type repo struct{ db *gorm.DB }
@@ -77,4 +83,32 @@ func (r *repo) List(ctx context.Context, ownerID string, all bool, limit, offset
 	}
 	var out []model.Shipment
 	return out, q.Find(&out).Error
+}
+
+func (r *repo) Delete(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// History references shipments(id), so it must go first.
+		if err := tx.Where("shipment_id = ?", id).Delete(&model.ShipmentStatusHistory{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", id).Delete(&model.Shipment{}).Error
+	})
+}
+
+func (r *repo) PurgeTerminalBefore(ctx context.Context, before time.Time) (int64, error) {
+	terminal := []string{string(model.StatusConfirmed), string(model.StatusCancelled)}
+	var deleted int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Delete history of the to-be-purged shipments first (FK), via subquery.
+		ids := tx.Model(&model.Shipment{}).Select("id").
+			Where("status IN ? AND created_at < ?", terminal, before)
+		if err := tx.Where("shipment_id IN (?)", ids).
+			Delete(&model.ShipmentStatusHistory{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("status IN ? AND created_at < ?", terminal, before).Delete(&model.Shipment{})
+		deleted = res.RowsAffected
+		return res.Error
+	})
+	return deleted, err
 }
