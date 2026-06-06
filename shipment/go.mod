@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/DataDog/dd-trace-go/contrib/gin-gonic/gin/v2 v2.8.2
 	github.com/DataDog/dd-trace-go/contrib/net/http/v2 v2.8.2
-	github.com/adamkekesi/microservice-demo/platform v0.0.0
+	github.com/adamkekesi/microservice-demo/platform v0.1.0
 	github.com/gin-gonic/gin v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
@@ -154,8 +154,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
-
-// The shared platform module is unpublished; resolve it from the local
-// filesystem. go.work also handles this for local dev, but the explicit
-// replace keeps `go mod tidy`, CI, and the Docker build working without it.
-replace github.com/adamkekesi/microservice-demo/platform => ../platform

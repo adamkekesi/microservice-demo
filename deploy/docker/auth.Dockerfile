@@ -1,21 +1,20 @@
-# Build from the REPO ROOT:
-#   docker build -f deploy/docker/auth.Dockerfile -t logistics-auth .
+# Build from the REPO ROOT (platform is a PRIVATE published module, so the build
+# needs a GitHub token passed as a BuildKit secret):
+#   GH_TOKEN=$(gh auth token) docker build --secret id=gh_token,env=GH_TOKEN \
+#     -f deploy/docker/auth.Dockerfile -t logistics-auth .
 #
-# Each service module resolves the shared platform module via a relative replace
-# directive, so we copy platform/ + the service and build with GOWORK=off.
+# The token is consumed by a git credential helper only while fetching the
+# private module; it is never written into an image layer.
 FROM golang:1.25-bookworm AS build
 WORKDIR /src
-ENV GOWORK=off CGO_ENABLED=0 GOOS=linux
+ENV CGO_ENABLED=0 GOOS=linux GOPRIVATE=github.com/adamkekesi/*
 
-# Dependency layer: copy module manifests first for caching.
-COPY platform/go.mod platform/go.sum ./platform/
-COPY auth/go.mod auth/go.sum ./auth/
-RUN cd auth && go mod download
-
-# Source for the shared module + this service only.
-COPY platform/ ./platform/
 COPY auth/ ./auth/
-RUN cd auth && go build -trimpath -ldflags="-s -w" -o /out/auth ./cmd/auth
+RUN --mount=type=secret,id=gh_token \
+    --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    git config --global credential.helper '!f(){ echo username=x-access-token; echo "password=$(cat /run/secrets/gh_token)"; };f' && \
+    cd auth && go build -trimpath -ldflags="-s -w" -o /out/auth ./cmd/auth
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/auth /auth

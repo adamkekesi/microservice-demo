@@ -14,7 +14,8 @@ import (
 // DD_TRACE_AGENT_PORT); the explicit options below are defensive so behaviour
 // is stable even if a var is unset. Call StopTracer (defer) on shutdown.
 func InitTracer() {
-	tracer.Start(
+	// Best-effort: a failed tracer start must not stop the service from booting.
+	_ = tracer.Start(
 		tracer.WithService(os.Getenv("DD_SERVICE")),
 		tracer.WithEnv(os.Getenv("DD_ENV")),
 		tracer.WithServiceVersion(os.Getenv("DD_VERSION")),

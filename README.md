@@ -29,7 +29,7 @@ metrics, logs, profiling) wired through Datadog's `dd-trace-go` v2.
 
 | Concern | Choice |
 |---|---|
-| Language | Go 1.25 (a transitive dep requires 1.25; `GOTOOLCHAIN=auto` fetches it) |
+| Language | Go 1.25 (provisioned by mise; a transitive dep requires 1.25) |
 | HTTP | Gin, instrumented by `dd-trace-go` |
 | ORM / DB | GORM v2 + pgx (stdlib) → PostgreSQL 16 |
 | Migrations | `golang-migrate` (plain SQL, run at startup) |
@@ -51,34 +51,57 @@ deploy/      Dockerfiles + Kubernetes env-wiring notes
 scripts/     Postgres init + Inventory seed
 ```
 
-Each service is its own Go module importing `platform`. `go.work` wires them for
-local dev; each service `go.mod` also carries a `replace … => ../platform` so
-`go mod tidy`, CI, and the Docker build resolve the shared module from the
-filesystem without VCS access. Service-private code lives under
+Each service is its own Go module that requires the **published** `platform`
+module (`github.com/adamkekesi/microservice-demo/platform`, git-tagged
+`platform/vX.Y.Z`) — there are **no `replace` directives**. For day-to-day work,
+`go.work` overlays the local `platform/` source, so builds/tests/Docker compile
+your working copy **offline, with no credentials**. Only `go mod tidy` resolves
+the published module from the remote; because the repo is private that needs
+`GOPRIVATE=github.com/adamkekesi/*` (set in `mise.toml`) plus git credentials
+(the `gh` credential helper). Service-private code lives under
 `<service>/internal/`; shared code is **exported** under `platform/` (not
 `internal/`) because Go's `internal` rule is per-module.
 
+**Changing `platform`:** local builds pick up edits instantly via the go.work
+overlay. To publish them for `go mod tidy` / CI / reproducible image builds,
+re-tag and bump consumers:
+
+```bash
+git tag platform/v0.1.2 && git push origin platform/v0.1.2
+# in each service module:
+go get github.com/adamkekesi/microservice-demo/platform@v0.1.2   # or: mise run tidy
+```
+
 ## Prerequisites
 
-- Go 1.25+ (or any 1.24+ with `GOTOOLCHAIN=auto`), Docker + Docker Compose.
+- [mise](https://mise.jdx.dev) (provisions Go 1.25 + golangci-lint v2), Docker +
+  Docker Compose, and the GitHub CLI (`gh`) authenticated for this private repo.
 - For Datadog telemetry: a `DD_API_KEY` (optional — the apps run fine without
   it; traces/metrics simply won't ship).
+
+```bash
+mise install        # Go 1.25 + golangci-lint v2 on PATH (+ GOPRIVATE)
+mise tasks          # list wrapped tasks: tidy build test test-integration lint up down seed smoke
+```
 
 ## Quick start (docker-compose)
 
 ```bash
-cp .env.example .env          # optionally set DD_API_KEY
-docker compose up --build     # postgres (3 DBs) + datadog-agent + 3 services
+cp .env.example .env     # optionally set DD_API_KEY
+mise run up              # GH_TOKEN=$(gh auth token) docker compose up --build
 ```
+
+The image build fetches the **private** `platform` module, so it needs a GitHub
+token, passed as a BuildKit secret. `mise run up` (and `make compose-up`) supply
+it from `gh auth token`; the token is used only during the fetch and is never
+written into an image layer.
 
 Services listen on `:8001` (auth), `:8002` (inventory), `:8003` (shipment). Each
 exposes `GET /health` (liveness) and `GET /ready` (readiness: DB + JWKS).
 
-Seed inventory (either run the SQL seed, or create resources via the API as in
-the walkthrough):
-
 ```bash
-make seed       # psql scripts/seed_inventory.sql against inventory_db
+mise run seed     # load seed warehouses/items/stock into the compose Postgres
+mise run smoke    # happy-path smoke test against the running stack
 ```
 
 ## Configuration (env vars)
