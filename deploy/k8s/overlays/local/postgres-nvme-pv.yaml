@@ -29,7 +29,7 @@ metadata:
   name: postgres-auth-nvme
 spec:
   capacity:
-    storage: 4Gi
+    storage: 10Gi
   accessModes: ["ReadWriteOnce"]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: postgres-local
@@ -53,7 +53,7 @@ metadata:
   name: postgres-inventory-nvme
 spec:
   capacity:
-    storage: 4Gi
+    storage: 10Gi
   accessModes: ["ReadWriteOnce"]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: postgres-local
@@ -77,7 +77,7 @@ metadata:
   name: postgres-shipment-nvme
 spec:
   capacity:
-    storage: 4Gi
+    storage: 10Gi
   accessModes: ["ReadWriteOnce"]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: postgres-local
