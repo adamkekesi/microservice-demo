@@ -97,10 +97,8 @@ run-shipment:
 seed:
 	docker compose exec -T postgres psql -U $(DB_USER) -d inventory_db < scripts/seed_inventory.sql
 
-# GH_TOKEN lets the build fetch the private published platform module (passed as
-# a BuildKit secret; never baked into a layer).
 compose-up:
-	GH_TOKEN="$$(gh auth token)" docker compose up --build
+	docker compose up --build
 
 compose-down:
 	docker compose down -v
@@ -108,8 +106,7 @@ compose-down:
 docker-build:
 	@for s in $(SERVICES); do \
 	  echo "== image $$s =="; \
-	  GH_TOKEN="$$(gh auth token)" docker build --secret id=gh_token,env=GH_TOKEN \
-	    -f deploy/docker/$$s.Dockerfile -t logistics-$$s . || exit 1; \
+	  docker build -f deploy/docker/$$s.Dockerfile -t logistics-$$s . || exit 1; \
 	done
 
 # --- Local Kubernetes (kind + ingress-nginx) ----------------------------------

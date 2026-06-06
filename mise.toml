@@ -7,12 +7,6 @@
 go = "1.25"
 golangci-lint = "2"
 
-[env]
-# `platform` is published from this PRIVATE repo, so `go mod tidy` fetches it
-# directly via the gh/git credential helper. Day-to-day build/test/Docker use
-# the go.work overlay (local platform source) and need no credentials.
-GOPRIVATE = "github.com/adamkekesi/*"
-
 [tasks.tidy]
 description = "go mod tidy across modules (workspace-safe)"
 run = "make tidy"
@@ -35,8 +29,7 @@ run = "make lint"
 
 [tasks.up]
 description = "Bring up the full stack (compose; builds images)"
-# GH_TOKEN lets the image build fetch the private published platform module.
-run = "GH_TOKEN=$(gh auth token) docker compose up --build"
+run = "docker compose up --build"
 
 [tasks.down]
 description = "Tear down the stack and its volumes"

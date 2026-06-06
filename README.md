@@ -53,13 +53,12 @@ scripts/     Postgres init + Inventory seed
 
 Each service is its own Go module that requires the **published** `platform`
 module (`github.com/adamkekesi/microservice-demo/platform`, git-tagged
-`platform/vX.Y.Z`) — there are **no `replace` directives**. For day-to-day work,
-`go.work` overlays the local `platform/` source, so builds/tests/Docker compile
-your working copy **offline, with no credentials**. Only `go mod tidy` resolves
-the published module from the remote; because the repo is private that needs
-`GOPRIVATE=github.com/adamkekesi/*` (set in `mise.toml`) plus git credentials
-(the `gh` credential helper). Service-private code lives under
-`<service>/internal/`; shared code is **exported** under `platform/` (not
+`platform/vX.Y.Z`) — there are **no `replace` directives**. The repo is public,
+so `go mod tidy`, CI, and Docker image builds resolve `platform` straight from
+the Go module proxy with **no credentials**. For day-to-day work, `go.work`
+additionally overlays the local `platform/` source, so builds/tests compile your
+working copy (including un-tagged edits) offline. Service-private code lives
+under `<service>/internal/`; shared code is **exported** under `platform/` (not
 `internal/`) because Go's `internal` rule is per-module.
 
 **Changing `platform`:** local builds pick up edits instantly via the go.work
@@ -75,26 +74,21 @@ go get github.com/adamkekesi/microservice-demo/platform@v0.1.2   # or: mise run 
 ## Prerequisites
 
 - [mise](https://mise.jdx.dev) (provisions Go 1.25 + golangci-lint v2), Docker +
-  Docker Compose, and the GitHub CLI (`gh`) authenticated for this private repo.
+  Docker Compose.
 - For Datadog telemetry: a `DD_API_KEY` (optional — the apps run fine without
   it; traces/metrics simply won't ship).
 
 ```bash
-mise install        # Go 1.25 + golangci-lint v2 on PATH (+ GOPRIVATE)
+mise install        # Go 1.25 + golangci-lint v2 on PATH
 mise tasks          # list wrapped tasks: tidy build test test-integration lint up down seed smoke
 ```
 
 ## Quick start (docker-compose)
 
 ```bash
-cp .env.example .env     # optionally set DD_API_KEY
-mise run up              # GH_TOKEN=$(gh auth token) docker compose up --build
+cp .env.example .env     # optionally set DD_API_KEY; set POSTGRES_HOST_PORT if 5432 is taken
+mise run up              # docker compose up --build (no credentials needed — platform is public)
 ```
-
-The image build fetches the **private** `platform` module, so it needs a GitHub
-token, passed as a BuildKit secret. `mise run up` (and `make compose-up`) supply
-it from `gh auth token`; the token is used only during the fetch and is never
-written into an image layer.
 
 Services listen on `:8001` (auth), `:8002` (inventory), `:8003` (shipment). Each
 exposes `GET /health` (liveness) and `GET /ready` (readiness: DB + JWKS).

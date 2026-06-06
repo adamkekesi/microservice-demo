@@ -1,10 +1,9 @@
 # Brings up Postgres (with three logical databases), the Datadog agent, and the
-# three services. See README for the curl happy-path walkthrough.
+# three services. platform is a PUBLIC published module, so image builds fetch it
+# from the Go proxy — no credentials needed.
 #
-#   cp .env.example .env                       # set DD_API_KEY to ship telemetry
-#   GH_TOKEN=$(gh auth token) docker compose up --build   # token: private platform module
-#
-# (mise run up / make compose-up set GH_TOKEN for you.)
+#   cp .env.example .env        # optionally set DD_API_KEY to ship telemetry
+#   docker compose up --build   # or: mise run up
 
 services:
   postgres:
@@ -44,8 +43,6 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/auth.Dockerfile
-      secrets:
-        - gh_token
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,8 +72,6 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/inventory.Dockerfile
-      secrets:
-        - gh_token
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,8 +102,6 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/shipment.Dockerfile
-      secrets:
-        - gh_token
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,12 +128,6 @@ services:
       DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
     ports:
       - "8003:8003"
-
-# Build-time secret: a GitHub token so the build can fetch the PRIVATE published
-# platform module. Sourced from the GH_TOKEN env var; never baked into a layer.
-secrets:
-  gh_token:
-    environment: GH_TOKEN
 
 volumes:
   pgdata:
