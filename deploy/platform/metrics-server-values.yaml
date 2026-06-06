@@ -1,0 +1,8 @@
+# Helm values for metrics-server on kind. Installed by `make metrics-up`.
+# metrics-server powers `kubectl top` and the HorizontalPodAutoscalers.
+#
+# On kind the kubelet serves metrics with a self-signed cert that metrics-server
+# would otherwise reject, so we skip that TLS verification. This is fine for a
+# local cluster; do NOT use --kubelet-insecure-tls in production.
+args:
+  - --kubelet-insecure-tls

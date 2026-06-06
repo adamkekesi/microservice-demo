@@ -1,0 +1,29 @@
+# Local (kind) overlay. This is what `make deploy` applies.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: logistics
+
+resources:
+  - ../../base
+
+# Secret consumed by Postgres (POSTGRES_*) and auth (ADMIN_*). Generated here so
+# the values live in the overlay, not the base; the name-hash makes pods restart
+# automatically when a value changes. Fine for local dev — do NOT commit real
+# secrets for a shared/cloud environment.
+secretGenerator:
+  - name: app-secrets
+    literals:
+      - POSTGRES_USER=logistics
+      - POSTGRES_PASSWORD=logistics
+      - ADMIN_EMAIL=admin@example.com
+      - ADMIN_PASSWORD=changeme123
+
+# Pin every service to the locally-built, kind-loaded image (see `make images`).
+images:
+  - name: logistics-auth
+    newTag: dev
+  - name: logistics-inventory
+    newTag: dev
+  - name: logistics-shipment
+    newTag: dev

@@ -9,6 +9,8 @@ info:
 servers:
   - url: http://localhost:8001
     description: Local (docker-compose)
+  - url: http://auth.localhost:8080
+    description: Local (kind gateway)
 tags:
   - name: auth
   - name: keys

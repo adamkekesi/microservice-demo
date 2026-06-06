@@ -1,0 +1,48 @@
+# Swagger UI exposure. Each service serves Swagger UI at /docs and its spec at
+# /openapi.yaml on the SAME paths, and the UI references /openapi.yaml by
+# absolute path — so they cannot share one host behind path routing. Each gets
+# its own hostname instead (*.localhost resolves to loopback). Visit:
+#
+#   http://auth.localhost:8080/docs
+#   http://inventory.localhost:8080/docs
+#   http://shipment.localhost:8080/docs
+#
+# Each host routes "/" to one service, so /docs and /openapi.yaml resolve
+# correctly and "Try it out" (server http://<svc>.localhost:8080) works too.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: logistics-docs
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: auth.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: auth
+                port:
+                  number: 8001
+    - host: inventory.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: inventory
+                port:
+                  number: 8002
+    - host: shipment.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shipment
+                port:
+                  number: 8003

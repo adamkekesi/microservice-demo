@@ -1,0 +1,13 @@
+# ClusterIP Service: in-cluster load balancer across auth pods. Other services
+# fetch JWKS at http://auth:8001/.well-known/jwks.json (same name as compose).
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+spec:
+  selector:
+    app: auth
+  ports:
+    - name: http
+      port: 8001
+      targetPort: http

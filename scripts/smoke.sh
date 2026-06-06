@@ -15,12 +15,17 @@ fail() { echo "SMOKE FAIL: $1"; exit 1; }
 command -v curl >/dev/null || fail "curl not found"
 command -v jq   >/dev/null || fail "jq not found"
 
-for p in 8001 8002 8003; do
-  # --retry-all-errors: a freshly-published port may reset/EOF (not "refused")
-  # until the backend's HTTP server is actually listening.
-  curl -s --retry 60 --retry-delay 1 --retry-connrefused --retry-all-errors -o /dev/null "http://localhost:$p/health" \
-    || fail "service on :$p not healthy"
-done
+# Health preflight. Skipped on k8s (SKIP_HEALTHCHECK=1) where the gateway only
+# routes the three service prefixes and `make deploy` already waited on readiness
+# probes; the bare /health path is not exposed there.
+if [ -z "${SKIP_HEALTHCHECK:-}" ]; then
+  for u in "$AUTH" "$INV" "$SHIP"; do
+    # --retry-all-errors: a freshly-published port may reset/EOF (not "refused")
+    # until the backend's HTTP server is actually listening.
+    curl -s --retry 60 --retry-delay 1 --retry-connrefused --retry-all-errors -o /dev/null "$u/health" \
+      || fail "service at $u not healthy"
+  done
+fi
 
 CUST_EMAIL="cust+$SUFFIX@example.com"
 curl -s -XPOST "$AUTH/auth/register" -d "{\"email\":\"$CUST_EMAIL\",\"password\":\"supersecret\"}" >/dev/null

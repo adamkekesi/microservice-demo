@@ -1,0 +1,11 @@
+# Mounted into the Postgres init dir; runs once on first boot to create one
+# logical database per service (mirrors scripts/init_databases.sql).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  init_databases.sql: |
+    CREATE DATABASE auth_db;
+    CREATE DATABASE inventory_db;
+    CREATE DATABASE shipment_db;
