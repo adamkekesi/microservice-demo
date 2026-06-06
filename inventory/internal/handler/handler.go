@@ -135,3 +135,20 @@ func (h *Handler) ReleaseReservation(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, resp)
 }
+
+func (h *Handler) DeleteReservation(c *gin.Context) {
+	if err := h.svc.DeleteReservation(c.Request.Context(), c.Param("id")); err != nil {
+		apperror.Respond(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) PurgeReservations(c *gin.Context) {
+	resp, err := h.svc.PurgeReservations(c.Request.Context(), c.Query("before"))
+	if err != nil {
+		apperror.Respond(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}

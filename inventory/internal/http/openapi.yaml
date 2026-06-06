@@ -110,6 +110,17 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { description: "INSUFFICIENT_STOCK (details.available, details.requested)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [reservations]
+      summary: Bulk-purge terminal reservations created before a cutoff (operator/admin)
+      description: "Retention sweep: deletes COMMITTED/RELEASED reservations created before `before`."
+      parameters:
+        - { name: before, in: query, required: true, schema: { type: string, format: date-time }, description: "RFC3339 cutoff; only reservations older than this are purged" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Purge" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /reservations/{id}:
     get:
       tags: [reservations]
@@ -120,6 +131,17 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [reservations]
+      summary: Delete a terminal reservation (owner or operator/admin)
+      description: "Deletes a COMMITTED/RELEASED reservation. A PENDING (active) reservation is refused (409); release or commit it first."
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "RESERVATION_NOT_ACTIVE (cannot delete a PENDING reservation)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
   /reservations/{id}/commit:
     post:
       tags: [reservations]
@@ -227,5 +249,9 @@ components:
         item_id: { type: string, format: uuid }
         quantity: { type: integer }
         expires_at: { type: string, format: date-time }
+    Purge:
+      type: object
+      properties:
+        deleted: { type: integer, description: number of rows removed }
 security:
   - bearerAuth: []

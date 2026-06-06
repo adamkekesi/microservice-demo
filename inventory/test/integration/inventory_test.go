@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -366,4 +367,66 @@ func TestHealthAndReady(t *testing.T) {
 	router, _ := newRouter(t)
 	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/health", "", nil).Code)
 	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/ready", "", nil).Code)
+}
+
+func reserveResp(t *testing.T, rec *httptest.ResponseRecorder) model.ReservationResponse {
+	t.Helper()
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var r model.ReservationResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &r))
+	return r
+}
+
+// Delete a terminal (RELEASED) reservation -> 204; the row is gone.
+func TestDeleteReleasedReservation(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	wh, item := createWHItemStock(t, router, op, 100)
+
+	r := reserveResp(t, reserve(t, router, cust, wh, item, 10))
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodPost, "/reservations/"+r.ID+"/release", cust, nil).Code)
+
+	rec := doJSON(t, router, http.MethodDelete, "/reservations/"+r.ID, cust, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusNotFound, doJSON(t, router, http.MethodGet, "/reservations/"+r.ID, cust, nil).Code)
+}
+
+// Deleting an active (PENDING) reservation is refused -> 409.
+func TestDeletePendingReservationRejected(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	wh, item := createWHItemStock(t, router, op, 100)
+
+	r := reserveResp(t, reserve(t, router, cust, wh, item, 10))
+	rec := doJSON(t, router, http.MethodDelete, "/reservations/"+r.ID, cust, nil)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	require.Equal(t, "RESERVATION_NOT_ACTIVE", parseErr(t, rec).Error.Code)
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/reservations/"+r.ID, cust, nil).Code)
+}
+
+// Bulk purge: operator removes terminal reservations older than the cutoff; a
+// PENDING one survives. A customer may not purge.
+func TestPurgeReservations(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	wh, item := createWHItemStock(t, router, op, 100)
+	cutoff := url.QueryEscape(time.Now().Add(time.Hour).Format(time.RFC3339))
+
+	released := reserveResp(t, reserve(t, router, cust, wh, item, 10))
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodPost, "/reservations/"+released.ID+"/release", cust, nil).Code)
+	pending := reserveResp(t, reserve(t, router, cust, wh, item, 10)) // stays PENDING
+
+	require.Equal(t, http.StatusForbidden,
+		doJSON(t, router, http.MethodDelete, "/reservations?before="+cutoff, cust, nil).Code)
+
+	rec := doJSON(t, router, http.MethodDelete, "/reservations?before="+cutoff, op, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var p model.PurgeResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
+	require.EqualValues(t, 1, p.Deleted, "only the terminal reservation is purged")
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/reservations/"+pending.ID, cust, nil).Code,
+		"the PENDING reservation survives")
 }

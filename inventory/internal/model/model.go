@@ -140,3 +140,8 @@ func (r *Reservation) ToResponse() ReservationResponse {
 		ExpiresAt:   r.ExpiresAt.UTC().Format(time.RFC3339),
 	}
 }
+
+// PurgeResponse reports how many rows a bulk purge removed.
+type PurgeResponse struct {
+	Deleted int64 `json:"deleted"`
+}

@@ -211,6 +211,48 @@ func (s *Service) ReleaseReservation(ctx context.Context, id string) (*model.Res
 	return &resp, nil
 }
 
+// DeleteReservation removes a terminal (COMMITTED/RELEASED) reservation. A
+// PENDING reservation is still active (holds stock), so deleting it is refused
+// with 409; release or commit it first. Owner or operator/admin only.
+func (s *Service) DeleteReservation(ctx context.Context, id string) error {
+	res, err := s.loadAndAuthorize(ctx, id)
+	if err != nil {
+		return err
+	}
+	if res.Status == model.StatusPending {
+		return apperror.Conflict(repository.CodeReservationNotActive,
+			"cannot delete a pending reservation; release or commit it first")
+	}
+	if err := s.repo.DeleteReservation(ctx, id); err != nil {
+		return apperror.Internal("could not delete reservation").Wrap(err)
+	}
+	s.metrics.Incr("logistics.reservation.deleted", "status:"+string(res.Status))
+	return nil
+}
+
+// PurgeReservations bulk-deletes terminal reservations created before `before`
+// (RFC3339). Operator/admin only — the hourly retention sweep.
+func (s *Service) PurgeReservations(ctx context.Context, before string) (*model.PurgeResponse, error) {
+	claims, ok := authn.ClaimsFrom(ctx)
+	if !ok {
+		return nil, apperror.Unauthenticated("")
+	}
+	if !claims.Role.IsOperatorOrAdmin() {
+		return nil, apperror.Forbidden("")
+	}
+	cutoff, err := time.Parse(time.RFC3339, before)
+	if err != nil {
+		return nil, apperror.Validation("before must be an RFC3339 timestamp",
+			map[string]any{"before": "required, RFC3339"})
+	}
+	n, err := s.repo.PurgeTerminalReservationsBefore(ctx, cutoff)
+	if err != nil {
+		return nil, apperror.Internal("could not purge reservations").Wrap(err)
+	}
+	s.metrics.Gauge("logistics.reservation.purged", float64(n))
+	return &model.PurgeResponse{Deleted: n}, nil
+}
+
 // loadAndAuthorize fetches a reservation and checks the caller may act on it
 // (owner or operator/admin), returning the standard 404/403 errors.
 func (s *Service) loadAndAuthorize(ctx context.Context, id string) (*model.Reservation, error) {
