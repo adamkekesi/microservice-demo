@@ -1,0 +1,16 @@
+# golangci-lint operates per-module; run it inside each module (the Makefile
+# `lint` target loops). gosimple is folded into staticcheck in newer releases.
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  exclude-rules:
+    # Integration tests are build-tagged; allow their helper patterns.
+    - path: test/integration/
+      linters:
+        - errcheck

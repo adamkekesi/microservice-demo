@@ -1,0 +1,131 @@
+# Brings up Postgres (with three logical databases), the Datadog agent, and the
+# three services. See README for the curl happy-path walkthrough.
+#
+#   cp .env.example .env   # set DD_API_KEY to ship telemetry to Datadog
+#   docker compose up --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-logistics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logistics}
+    volumes:
+      - ./scripts/init_databases.sql:/docker-entrypoint-initdb.d/init_databases.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-logistics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    environment:
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_SITE: datadoghq.com
+      DD_APM_ENABLED: "true"
+      DD_APM_NON_LOCAL_TRAFFIC: "true"
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+    ports:
+      - "8126:8126"
+      - "8125:8125/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+
+  auth:
+    build:
+      context: .
+      dockerfile: deploy/docker/auth.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+    environment:
+      PORT: "8001"
+      DATABASE_URL: postgres://${POSTGRES_USER:-logistics}:${POSTGRES_PASSWORD:-logistics}@postgres:5432/auth_db?sslmode=disable
+      JWT_ISSUER: ${JWT_ISSUER:-auth-service}
+      JWT_KEY_ID: ${JWT_KEY_ID:-auth-key-1}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-900}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme123}
+      LOG_LEVEL: info
+      DD_ENV: ${DD_ENV:-dev}
+      DD_SERVICE: auth-service
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: "8126"
+      DD_DOGSTATSD_PORT: "8125"
+      DD_LOGS_INJECTION: "true"
+      DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
+    ports:
+      - "8001:8001"
+
+  inventory:
+    build:
+      context: .
+      dockerfile: deploy/docker/inventory.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth:
+        condition: service_started
+      datadog-agent:
+        condition: service_started
+    environment:
+      PORT: "8002"
+      DATABASE_URL: postgres://${POSTGRES_USER:-logistics}:${POSTGRES_PASSWORD:-logistics}@postgres:5432/inventory_db?sslmode=disable
+      AUTH_JWKS_URL: http://auth:8001/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-auth-service}
+      JWKS_CACHE_TTL_SECONDS: "600"
+      RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
+      LOG_LEVEL: info
+      DD_ENV: ${DD_ENV:-dev}
+      DD_SERVICE: inventory-service
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: "8126"
+      DD_DOGSTATSD_PORT: "8125"
+      DD_LOGS_INJECTION: "true"
+      DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
+    ports:
+      - "8002:8002"
+
+  shipment:
+    build:
+      context: .
+      dockerfile: deploy/docker/shipment.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inventory:
+        condition: service_started
+      datadog-agent:
+        condition: service_started
+    environment:
+      PORT: "8003"
+      DATABASE_URL: postgres://${POSTGRES_USER:-logistics}:${POSTGRES_PASSWORD:-logistics}@postgres:5432/shipment_db?sslmode=disable
+      AUTH_JWKS_URL: http://auth:8001/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-auth-service}
+      JWKS_CACHE_TTL_SECONDS: "600"
+      INVENTORY_BASE_URL: http://inventory:8002
+      INVENTORY_TIMEOUT_MS: ${INVENTORY_TIMEOUT_MS:-5000}
+      LOG_LEVEL: info
+      DD_ENV: ${DD_ENV:-dev}
+      DD_SERVICE: shipment-service
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: "8126"
+      DD_DOGSTATSD_PORT: "8125"
+      DD_LOGS_INJECTION: "true"
+      DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
+    ports:
+      - "8003:8003"
+
+volumes:
+  pgdata:

@@ -1,0 +1,13 @@
+# Keep the build context minimal. Build context is the repo root.
+.git
+.gitignore
+**/test
+*.md
+deploy/k8s
+.env
+.env.local
+*.pem
+bin/
+out/
+*.test
+*.out
