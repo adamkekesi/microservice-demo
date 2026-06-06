@@ -1,0 +1,67 @@
+# DatadogAgent custom resource, reconciled by the Datadog Operator (installed by
+# `make datadog-up`). This deploys the node-local Agent as a DaemonSet plus the
+# Cluster Agent, and is the missing piece that lets the already-instrumented Go
+# services actually ship telemetry.
+#
+# Why this is trimmed down vs. the Datadog UI's suggested snippet:
+#   - NO apm.instrumentation (Single Step Instrumentation): SSI auto-injects
+#     tracers for Java/Python/JS/PHP/.NET/Ruby. Go is not SSI-supported, and
+#     these binaries are already instrumented at compile time via dd-trace-go.
+#     Instead we just open the APM intake on a host port (below).
+#   - NO RUM: this is a backend-only API, there is no browser app to instrument.
+#
+# The services reach the Agent at status.hostIP:8126 (APM) / :8125 (DogStatsD) —
+# see DD_AGENT_HOST/DD_TRACE_AGENT_PORT/DD_DOGSTATSD_PORT in the Deployments — so
+# the Agent must bind those as host ports. On kind (single node) a DaemonSet
+# hostPort binds the node's network namespace and pods reach it via the node IP;
+# no kind-config change is needed.
+apiVersion: datadoghq.com/v2alpha1
+kind: DatadogAgent
+metadata:
+  name: datadog
+  namespace: datadog
+spec:
+  global:
+    clusterName: logistics-microservice
+    site: datadoghq.eu
+    # kind's kubelet serves a self-signed cert the Agent would otherwise reject,
+    # which blocks pod/container discovery (→ no log tailers, no Orchestrator
+    # Explorer pods). Skip verification — same rationale as metrics-server's
+    # --kubelet-insecure-tls. Local cluster only; do NOT do this in production.
+    kubelet:
+      tlsVerify: false
+    credentials:
+      # Created by `make datadog-up` from $DD_API_KEY — never committed.
+      apiSecret:
+        secretName: datadog-secret
+        keyName: api-key
+    tags:
+      - "env:dev" # matches DD_ENV=dev on the services
+  features:
+    apm:
+      enabled: true
+      hostPortConfig:
+        enabled: true
+        hostPort: 8126 # = DD_TRACE_AGENT_PORT on the services
+    dogstatsd:
+      hostPortConfig:
+        enabled: true
+        hostPort: 8125 # = DD_DOGSTATSD_PORT on the services
+      originDetectionEnabled: true
+    logCollection:
+      enabled: true
+      containerCollectAll: true
+    clusterChecks:
+      enabled: true
+    orchestratorExplorer:
+      enabled: true
+  # On kind the Agent's automatic hostname detection fails ("unable to reliably
+  # determine the host name"), crash-looping the core agent. Give it an explicit
+  # hostname from the node name via the downward API (not hardcoded).
+  override:
+    nodeAgent:
+      env:
+        - name: DD_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName

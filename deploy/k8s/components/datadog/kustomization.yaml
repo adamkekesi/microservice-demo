@@ -1,0 +1,53 @@
+# Kustomize Component: turns Datadog tracing ON for the three services.
+#
+# The base keeps DD_TRACE_ENABLED=false so it stays agent-free and zero-secrets
+# (see deploy/k8s/README.md). This component is referenced by overlays/local so
+# the demo opts in with a single line, while base remains neutral for anyone
+# building their own overlay. Pair it with `make datadog-up`, which deploys the
+# Agent the enabled tracers send to.
+#
+# Strategic-merge patches: env is a list keyed by `name`, so each patch updates
+# only DD_TRACE_ENABLED on its (differently named) container.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: auth
+      spec:
+        template:
+          spec:
+            containers:
+              - name: auth
+                env:
+                  - name: DD_TRACE_ENABLED
+                    value: "true"
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: inventory
+      spec:
+        template:
+          spec:
+            containers:
+              - name: inventory
+                env:
+                  - name: DD_TRACE_ENABLED
+                    value: "true"
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: shipment
+      spec:
+        template:
+          spec:
+            containers:
+              - name: shipment
+                env:
+                  - name: DD_TRACE_ENABLED
+                    value: "true"

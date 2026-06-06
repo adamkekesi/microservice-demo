@@ -7,6 +7,12 @@ namespace: logistics
 resources:
   - ../../base
 
+# Enable Datadog tracing (DD_TRACE_ENABLED=true) on the three services. Base
+# stays off-by-default; this is the demo opting in. Deploy the Agent the tracers
+# send to with `make datadog-up`.
+components:
+  - ../../components/datadog
+
 # Secret consumed by Postgres (POSTGRES_*) and auth (ADMIN_*). Generated here so
 # the values live in the overlay, not the base; the name-hash makes pods restart
 # automatically when a value changes. Fine for local dev — do NOT commit real

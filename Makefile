@@ -18,12 +18,14 @@ KIND_CONTEXT   := kind-$(KIND_CLUSTER)
 KIND_CONFIG    := deploy/kind/kind-config.yaml
 INGRESS_VALUES := deploy/platform/ingress-nginx-values.yaml
 METRICS_VALUES := deploy/platform/metrics-server-values.yaml
+DD_OPERATOR_VALUES := deploy/platform/datadog-operator-values.yaml
+DD_AGENT_CR        := deploy/platform/datadog-agent.yaml
 K8S_OVERLAY    := deploy/k8s/overlays/local
 KUBECTL        := kubectl --context $(KIND_CONTEXT)
 
 .PHONY: help tidy fmt build test test-integration test-all lint \
         run-auth run-inventory run-shipment seed compose-up compose-down docker-build \
-        cluster-up ingress-up metrics-up cluster-verify cluster-down \
+        cluster-up ingress-up metrics-up datadog-up cluster-verify cluster-down \
         images deploy undeploy smoke-k8s k8s-up
 
 help:
@@ -43,6 +45,7 @@ help:
 	@echo "  cluster-up       create the local kind cluster (deploy/kind/kind-config.yaml)"
 	@echo "  ingress-up       install ingress-nginx into the cluster (Helm)"
 	@echo "  metrics-up       install metrics-server (enables HPA + kubectl top)"
+	@echo "  datadog-up       install Datadog Operator + Agent (needs DD_API_KEY)"
 	@echo "  cluster-verify   prove ingress routing works (deploys + deletes a smoke app)"
 	@echo "  images           build the 3 service images and load them into kind"
 	@echo "  deploy           apply the app manifests (kubectl apply -k overlays/local)"
@@ -153,6 +156,30 @@ metrics-up:
 	  --kube-context $(KIND_CONTEXT) \
 	  --namespace kube-system \
 	  -f $(METRICS_VALUES) --wait --timeout 5m
+
+# Datadog Operator + node-local Agent. Optional opt-in (not part of k8s-up)
+# because it needs a real API key. Provide it via the environment:
+#   DD_API_KEY=<your key> make datadog-up
+# The key is written to a Secret (idempotently) and never committed. The Agent
+# receives APM on host port 8126 / DogStatsD on 8125; the services already point
+# DD_AGENT_HOST at status.hostIP, and overlays/local enables DD_TRACE_ENABLED.
+datadog-up:
+	@test -n "$$DD_API_KEY" || { echo "ERROR: set DD_API_KEY=<your key> first"; exit 1; }
+	helm repo add datadog https://helm.datadoghq.com >/dev/null 2>&1 || true
+	helm repo update datadog >/dev/null
+	helm upgrade --install datadog-operator datadog/datadog-operator \
+	  --kube-context $(KIND_CONTEXT) \
+	  --namespace datadog --create-namespace \
+	  -f $(DD_OPERATOR_VALUES) --wait --timeout 5m
+	$(KUBECTL) create secret generic datadog-secret -n datadog \
+	  --from-literal api-key=$$DD_API_KEY --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f $(DD_AGENT_CR)
+	$(KUBECTL) -n datadog rollout status daemonset/datadog-agent --timeout=300s
+	# Re-apply the overlay so the datadog component's DD_TRACE_ENABLED=true reaches
+	# the Deployments (a plain `rollout restart` would keep the old, disabled spec).
+	$(KUBECTL) apply -k $(K8S_OVERLAY)
+	$(KUBECTL) -n logistics rollout status deploy/auth deploy/inventory deploy/shipment --timeout=180s
+	@echo "Datadog up. Generate traffic with 'make smoke-k8s', then view APM at https://app.datadoghq.eu"
 
 # Build the three service images and load them into the kind node (no registry).
 images:

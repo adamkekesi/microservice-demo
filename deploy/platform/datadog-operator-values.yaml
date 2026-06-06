@@ -1,0 +1,13 @@
+# Helm values for the Datadog Operator. Installed by `make datadog-up`:
+#   helm upgrade --install datadog-operator datadog/datadog-operator \
+#     -n datadog --create-namespace -f deploy/platform/datadog-operator-values.yaml
+#
+# The Operator watches DatadogAgent custom resources and reconciles the Agent
+# DaemonSet + Cluster Agent. The actual telemetry config lives in the CR
+# (deploy/platform/datadog-agent.yaml), not here.
+#
+# Defaults are fine for a local kind cluster; values are kept explicit so the
+# install mirrors the other deploy/platform/*-values.yaml add-ons. Restrict the
+# Operator to the datadog namespace (we run a single DatadogAgent there).
+watchNamespaces:
+  - datadog

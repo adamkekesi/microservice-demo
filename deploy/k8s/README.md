@@ -89,21 +89,41 @@ instead.
 > cache TTL expires. Just restart them: `kubectl -n logistics rollout restart
 > deploy/inventory deploy/shipment`.
 
-## Observability (Datadog) — optional, off by default
+## Observability (Datadog) — opt-in
 
-The app images speak Datadog APM, but no agent is deployed here, so the
-Deployments set `DD_TRACE_ENABLED=false` and the stack runs with zero secrets.
-`DD_AGENT_HOST` is already wired from the node host IP, so to enable telemetry:
-deploy the Datadog agent as a node-local `DaemonSet` (so each pod reaches it on
-its own node), then flip `DD_TRACE_ENABLED=true`:
+The app images are already instrumented (compile-time `dd-trace-go`: traces,
+`logistics.*` DogStatsD metrics, trace-correlated logs). They reach the Agent at
+the node host IP — `DD_AGENT_HOST` comes from `status.hostIP`, APM on `8126`,
+DogStatsD on `8125`. The **base** keeps `DD_TRACE_ENABLED=false` so it stays
+agent-free and runs with zero secrets; the **local overlay** turns tracing on
+via the `datadog` Kustomize component (`deploy/k8s/components/datadog`).
 
-```yaml
-env:
-  - name: DD_AGENT_HOST
-    valueFrom:
-      fieldRef:
-        fieldPath: status.hostIP
+To make telemetry actually flow, deploy the Agent (a node-local `DaemonSet`,
+managed by the Datadog Operator) and provide your API key:
+
+```bash
+DD_API_KEY=<your key> make datadog-up
 ```
+
+`datadog-up` installs the Operator (Helm), writes `DD_API_KEY` into a
+`datadog-secret` (idempotent, never committed), applies the `DatadogAgent` CR
+(`deploy/platform/datadog-agent.yaml`, site `datadoghq.eu`), and restarts the
+services. Generate traffic with `make smoke-k8s`, then view the distributed
+trace (`shipment → inventory → postgres`), the `logistics.*` metrics, and the
+correlated logs in Datadog APM (EU).
+
+On kind the single node is one container, so the Agent's `hostPort` 8126/8125
+bind that node's network namespace and pods reach them via `status.hostIP` — no
+`kind-config.yaml` change is needed.
+
+> **Not used here:** APM Single-Step Instrumentation (SSI) — it auto-injects
+> Java/Python/JS/PHP/.NET/Ruby tracers; Go isn't supported and is already
+> instrumented at compile time. And RUM — this is a backend-only API with no
+> browser app. Both are intentionally omitted from the CR.
+
+> If you run `make k8s-up` **without** `datadog-up`, the services have tracing
+> enabled but no Agent to reach — harmless (`dd-trace-go` just logs connection
+> retries).
 
 ## Topology notes
 
