@@ -27,13 +27,13 @@ spec:
         value: http://ingress-nginx-controller.ingress-nginx.svc
       # Diurnal profile: 40 visitors/s during 08:00-12:00, 10/s otherwise.
       - name: VISITORS_PEAK
-        value: "40"
+        value: "400"
       - name: VISITORS_OFF
-        value: "10"
+        value: "100"
       - name: PEAK_START_HOUR
         value: "8"
       - name: PEAK_END_HOUR
-        value: "12"
+        value: "3"
       # Hours to add to UTC so "08:00" matches your local clock (e.g. 2 = CEST).
       - name: TZ_OFFSET_HOURS
         value: "0"

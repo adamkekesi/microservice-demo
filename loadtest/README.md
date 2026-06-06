@@ -35,13 +35,15 @@ the rate is a pure function of the wall clock, a crash or cluster downtime
 self-heals: the next hourly tick resumes at the correct level. No checkpoint to
 lose.
 
-**Returning vs new visitors.** 70% of visits are returning users that reuse a
-pooled account (just log in); the other 30% are first-time signups (register +
-log in). This models a realistic mix and eases the auth bcrypt load (most visits
-skip the registration hash). The returning path self-heals: if a pooled account
-has been reclaimed by the delete wave it is re-registered on demand. Either way
-each session logs in fresh, so every request uses a token far younger than its
-15-minute TTL — no expiry breakage.
+**Returning vs new visitors, with token reuse.** 70% of visits are returning
+users; 30% are first-time signups (register + log in). A returning visitor has a
+stable per-VU identity and **reuses a cached access token for most of its 900s
+life**, logging in again only when the token nears expiry — exactly how a real
+client with a 15-minute session behaves. So most returning visits make no auth
+call at all, which keeps login/bcrypt load low and lets auth scale with real
+demand rather than with raw visitor count. The cached JWT keeps working even
+after the delete wave reclaims the account (services verify the signature, not
+row existence); the next re-login then re-registers it on demand.
 
 **The request mix deletes data continuously.** Every visitor that places an
 order confirms/cancels it and then `DELETE`s its own shipment and reservation —

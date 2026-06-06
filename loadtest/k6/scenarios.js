@@ -37,15 +37,24 @@ const TZ_OFFSET = parseFloat(__ENV.TZ_OFFSET_HOURS || '0'); // hours to add to U
 const ORDER_RATE = parseFloat(__ENV.ORDER_RATE || '0.3'); // fraction of visitors who order
 const DURATION = __ENV.RUN_DURATION || '58m'; // a touch under an hour so the launcher can recycle cleanly
 
-// Returning vs new visitors. 70% of visits reuse a pooled account (just log in);
-// 30% are first-time signups (register + log in). This both models a realistic
-// traffic mix and eases the auth bcrypt load, since most visits skip the extra
-// registration hash. The pool accounts are role=customer, so the hourly delete
-// wave eventually purges them — the returning path is self-healing: if a pooled
-// account is gone it is re-registered on demand.
+// Returning vs new visitors. 70% of visits are returning users, 30% first-time
+// signups (register + log in). A returning visitor has a STABLE identity tied to
+// its VU and reuses a cached access token for most of its 900s life — logging in
+// again only when the token nears expiry — exactly how a real client with a
+// 15-minute session behaves. So returning visits mostly skip auth entirely,
+// keeping login/bcrypt load low. The accounts are role=customer, so the hourly
+// delete wave purges them; the cached JWT keeps working until it expires (the
+// services verify the signature, not row existence), and the next re-login then
+// re-registers the account on demand.
 const RETURNING_RATE = parseFloat(__ENV.RETURNING_RATE || '0.7');
-const RETURNING_POOL = parseInt(__ENV.RETURNING_POOL || '1000', 10); // distinct reusable accounts
+const RETURNING_POOL = parseInt(__ENV.RETURNING_POOL || '1000', 10); // cap on distinct returning identities
 const VISITOR_PASSWORD = 'loadtest123';
+
+// Per-VU token cache (email -> { token, exp }). VU module-scope state persists
+// across that VU's iterations, so a returning user reuses its token within TTL.
+const tokenCache = {};
+const TOKEN_TTL_MS = 900000; // matches auth access-token expires_in (900s)
+const TOKEN_REFRESH_BUFFER_MS = 60000; // re-login when <60s remain
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -94,23 +103,30 @@ function login(email, password) {
 }
 
 // acquireToken returns a bearer token for this visit. 70% of the time it is a
-// returning user (reuse a pooled account, just log in); otherwise a first-time
-// signup (register a unique throwaway account, then log in). The returning path
-// self-heals: if a pooled account has been purged by the delete wave, it is
-// re-registered on demand.
+// returning user: a stable per-VU identity whose token is reused from the cache
+// while still valid, so most returning visits make NO auth call at all. The
+// other 30% are first-time signups (register a unique throwaway account, then
+// log in). A returning re-login self-heals a purged account by re-registering.
 function acquireToken() {
   if (Math.random() < RETURNING_RATE) {
-    const email = `returning-${Math.floor(Math.random() * RETURNING_POOL)}@load.example`;
+    // Stable identity for this VU -> high token-reuse, like a real returning user.
+    const email = `returning-${__VU % RETURNING_POOL}@load.example`;
+    const cached = tokenCache[email];
+    if (cached && cached.exp - Date.now() > TOKEN_REFRESH_BUFFER_MS) {
+      return cached.token; // reuse the still-valid session token (no auth call)
+    }
     let token = login(email, VISITOR_PASSWORD);
     if (!token) {
+      // Account absent (e.g. reclaimed by the delete wave) -> recreate it.
       http.post(`${AUTH}/register`, JSON.stringify({ email, password: VISITOR_PASSWORD }), { headers: JSON_HEADERS });
       token = login(email, VISITOR_PASSWORD);
     }
+    if (token) tokenCache[email] = { token, exp: Date.now() + TOKEN_TTL_MS };
     return token;
   }
   const email = `v-${__VU}-${__ITER}-${Date.now()}@load.example`;
   http.post(`${AUTH}/register`, JSON.stringify({ email, password: VISITOR_PASSWORD }), { headers: JSON_HEADERS });
-  return login(email, VISITOR_PASSWORD);
+  return login(email, VISITOR_PASSWORD); // unique per visit; nothing to cache
 }
 
 function bearer(token) {
