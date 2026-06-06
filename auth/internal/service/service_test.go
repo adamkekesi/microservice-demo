@@ -58,6 +58,22 @@ func (m *mockUserRepo) AdminExists(_ context.Context) (bool, error) {
 	return false, nil
 }
 
+func (m *mockUserRepo) DeleteByID(_ context.Context, id string) error {
+	delete(m.users, id)
+	return nil
+}
+
+func (m *mockUserRepo) PurgeCustomersBefore(_ context.Context, before time.Time) (int64, error) {
+	var n int64
+	for id, u := range m.users {
+		if u.Role == authn.RoleCustomer && u.CreatedAt.Before(before) {
+			delete(m.users, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func newTestService(t *testing.T) (*Service, *authn.Signer) {
 	t.Helper()
 	key, err := authn.GenerateRSAKey(2048)
@@ -169,4 +185,58 @@ func TestEnsureAdmin(t *testing.T) {
 
 	// Idempotent: a second call must not create a duplicate or error.
 	require.NoError(t, svc.EnsureAdmin(ctx, "admin@x.com", "supersecret"))
+}
+
+// --- delete / purge ---
+
+func TestDeleteUser_Success(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	u, err := svc.Register(ctx, model.RegisterRequest{Email: "c@x.com", Password: "supersecret"})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.DeleteUser(ctx, u.ID))
+	_, err = svc.Me(ctx, u.ID)
+	requireAppError(t, err, apperror.CodeNotFound, 404)
+}
+
+func TestDeleteUser_NotFound(t *testing.T) {
+	svc, _ := newTestService(t)
+	err := svc.DeleteUser(context.Background(), "00000000-0000-0000-0000-000000000000")
+	requireAppError(t, err, apperror.CodeNotFound, 404)
+}
+
+func TestDeleteUser_AdminProtected(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	admin, err := svc.CreateUser(ctx, model.CreateUserRequest{Email: "a@x.com", Password: "supersecret", Role: "admin"})
+	require.NoError(t, err)
+
+	err = svc.DeleteUser(ctx, admin.ID)
+	requireAppError(t, err, "ADMIN_PROTECTED", 409)
+	_, err = svc.Me(ctx, admin.ID)
+	require.NoError(t, err, "admin must survive a delete attempt")
+}
+
+func TestPurgeUsers_InvalidBefore(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.PurgeUsers(context.Background(), "not-a-time")
+	requireAppError(t, err, apperror.CodeValidation, 400)
+}
+
+func TestPurgeUsers_DeletesCustomersNotPrivileged(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	_, err := svc.Register(ctx, model.RegisterRequest{Email: "c1@x.com", Password: "supersecret"})
+	require.NoError(t, err)
+	_, err = svc.Register(ctx, model.RegisterRequest{Email: "c2@x.com", Password: "supersecret"})
+	require.NoError(t, err)
+	admin, err := svc.CreateUser(ctx, model.CreateUserRequest{Email: "a@x.com", Password: "supersecret", Role: "admin"})
+	require.NoError(t, err)
+
+	resp, err := svc.PurgeUsers(ctx, time.Now().Add(time.Hour).Format(time.RFC3339))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, resp.Deleted, "both customers purged")
+	_, err = svc.Me(ctx, admin.ID)
+	require.NoError(t, err, "admin must not be purged")
 }

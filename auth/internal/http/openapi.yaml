@@ -95,6 +95,30 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { description: "EMAIL_TAKEN", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [auth]
+      summary: Bulk-purge customer accounts created before a cutoff (admin only)
+      description: "Retention sweep: deletes role=customer accounts created before `before`. Operators and admins are never touched."
+      parameters:
+        - { name: before, in: query, required: true, schema: { type: string, format: date-time }, description: "RFC3339 cutoff; only customers older than this are purged" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Purge" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /auth/users/{id}:
+    delete:
+      tags: [auth]
+      summary: Delete a user by id (admin only)
+      description: "Deletes a customer or operator account. Admin accounts are protected (409) so the seed admin cannot be locked out."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "ADMIN_PROTECTED (cannot delete an admin user)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 components:
   securitySchemes:
     bearerAuth:
@@ -157,6 +181,10 @@ components:
         access_token: { type: string }
         token_type: { type: string, example: Bearer }
         expires_in: { type: integer, example: 900 }
+    Purge:
+      type: object
+      properties:
+        deleted: { type: integer, description: number of rows removed }
     JWKS:
       type: object
       properties:

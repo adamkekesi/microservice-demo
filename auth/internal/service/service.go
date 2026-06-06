@@ -126,6 +126,44 @@ func (s *Service) Me(ctx context.Context, userID string) (*model.UserResponse, e
 	return &resp, nil
 }
 
+// DeleteUser removes a user by id (admin-only; enforced by the route guard).
+// Admin accounts are protected so the seed admin can't be locked out.
+func (s *Service) DeleteUser(ctx context.Context, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return apperror.NotFound("user not found")
+	}
+	u, err := s.users.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperror.NotFound("user not found")
+		}
+		return apperror.Internal("could not load user").Wrap(err)
+	}
+	if u.Role == authn.RoleAdmin {
+		return apperror.Conflict("ADMIN_PROTECTED", "cannot delete an admin user")
+	}
+	if err := s.users.DeleteByID(ctx, id); err != nil {
+		return apperror.Internal("could not delete user").Wrap(err)
+	}
+	return nil
+}
+
+// PurgeUsers bulk-deletes customer accounts created before `before` (RFC3339).
+// Admin-only (enforced by the route guard). Operators and admins are never
+// touched. This is the hourly retention sweep for throwaway load-test users.
+func (s *Service) PurgeUsers(ctx context.Context, before string) (*model.PurgeResponse, error) {
+	cutoff, err := time.Parse(time.RFC3339, before)
+	if err != nil {
+		return nil, apperror.Validation("before must be an RFC3339 timestamp",
+			map[string]any{"before": "required, RFC3339"})
+	}
+	n, err := s.users.PurgeCustomersBefore(ctx, cutoff)
+	if err != nil {
+		return nil, apperror.Internal("could not purge users").Wrap(err)
+	}
+	return &model.PurgeResponse{Deleted: n}, nil
+}
+
 // EnsureAdmin creates the seed admin if none exists (Feature Spec §3.3).
 func (s *Service) EnsureAdmin(ctx context.Context, email, password string) error {
 	if email == "" || password == "" {

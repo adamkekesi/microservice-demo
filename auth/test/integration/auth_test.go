@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/adamkekesi/microservice-demo/platform/authn"
 	"github.com/adamkekesi/microservice-demo/platform/observability"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -192,4 +194,71 @@ func TestHealthAndReady(t *testing.T) {
 	router, _ := setup(t)
 	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/health", "", nil).Code)
 	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/ready", "", nil).Code)
+}
+
+// adminToken seeds an admin and returns a logged-in admin access token.
+func adminToken(t *testing.T, router *gin.Engine, svc *service.Service) string {
+	t.Helper()
+	_, err := svc.CreateUser(context.Background(),
+		model.CreateUserRequest{Email: "admin@example.com", Password: "supersecret", Role: "admin"})
+	require.NoError(t, err)
+	rec := doJSON(t, router, http.MethodPost, "/auth/login", "",
+		model.LoginRequest{Email: "admin@example.com", Password: "supersecret"})
+	var l model.LoginResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &l))
+	return l.AccessToken
+}
+
+func registerCustomerID(t *testing.T, router *gin.Engine, email string) string {
+	t.Helper()
+	rec := doJSON(t, router, http.MethodPost, "/auth/register", "",
+		model.RegisterRequest{Email: email, Password: "supersecret"})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var u model.UserResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &u))
+	return u.ID
+}
+
+// Admin deletes a customer -> 204; a customer may not delete; admins are protected.
+func TestDeleteUser(t *testing.T) {
+	router, svc := setup(t)
+	admin := adminToken(t, router, svc)
+	custID := registerCustomerID(t, router, "victim@example.com")
+
+	// A non-admin token is rejected by the route guard.
+	custLogin := doJSON(t, router, http.MethodPost, "/auth/login", "", model.LoginRequest{Email: "victim@example.com", Password: "supersecret"})
+	var cl model.LoginResponse
+	require.NoError(t, json.Unmarshal(custLogin.Body.Bytes(), &cl))
+	require.Equal(t, http.StatusForbidden, doJSON(t, router, http.MethodDelete, "/auth/users/"+custID, cl.AccessToken, nil).Code)
+
+	require.Equal(t, http.StatusNoContent, doJSON(t, router, http.MethodDelete, "/auth/users/"+custID, admin, nil).Code)
+
+	// Unknown id (valid UUID) and a malformed id both map to 404, not 500.
+	require.Equal(t, http.StatusNotFound, doJSON(t, router, http.MethodDelete, "/auth/users/"+uuid.NewString(), admin, nil).Code)
+	require.Equal(t, http.StatusNotFound, doJSON(t, router, http.MethodDelete, "/auth/users/not-a-uuid", admin, nil).Code)
+
+	// Deleting the admin itself -> 409 ADMIN_PROTECTED.
+	meRec := doJSON(t, router, http.MethodGet, "/auth/me", admin, nil)
+	var me model.UserResponse
+	require.NoError(t, json.Unmarshal(meRec.Body.Bytes(), &me))
+	delAdmin := doJSON(t, router, http.MethodDelete, "/auth/users/"+me.ID, admin, nil)
+	require.Equal(t, http.StatusConflict, delAdmin.Code, delAdmin.Body.String())
+}
+
+// Bulk purge: admin removes customers older than the cutoff; the admin survives.
+func TestPurgeUsers(t *testing.T) {
+	router, svc := setup(t)
+	admin := adminToken(t, router, svc)
+	registerCustomerID(t, router, "c1@example.com")
+	registerCustomerID(t, router, "c2@example.com")
+	cutoff := url.QueryEscape(time.Now().Add(time.Hour).Format(time.RFC3339))
+
+	rec := doJSON(t, router, http.MethodDelete, "/auth/users?before="+cutoff, admin, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var p model.PurgeResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
+	require.EqualValues(t, 2, p.Deleted)
+
+	// Admin can still authenticate (was not purged).
+	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/auth/me", admin, nil).Code)
 }

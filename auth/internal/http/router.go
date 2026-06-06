@@ -55,6 +55,9 @@ func NewRouter(d Deps) *gin.Engine {
 	authed.Use(authn.RequireAuth(d.Verifier))
 	authed.GET("/auth/me", h.Me)
 	authed.POST("/auth/users", authn.RequireRole(authn.RoleAdmin), h.CreateUser)
+	// Bulk retention sweep registered before the /:id route so it isn't shadowed.
+	authed.DELETE("/auth/users", authn.RequireRole(authn.RoleAdmin), h.PurgeUsers)
+	authed.DELETE("/auth/users/:id", authn.RequireRole(authn.RoleAdmin), h.DeleteUser)
 
 	return r
 }
