@@ -18,7 +18,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
-          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z postgres-auth 5432; do echo waiting for postgres; sleep 2; done"]
       containers:
         - name: auth
           image: logistics-auth:dev
@@ -35,7 +35,7 @@ spec:
                   name: app-secrets
                   key: POSTGRES_PASSWORD
             - name: DATABASE_URL
-              value: postgres://logistics:$(POSTGRES_PASSWORD)@postgres:5432/auth_db?sslmode=disable
+              value: postgres://logistics:$(POSTGRES_PASSWORD)@postgres-auth:5432/auth_db?sslmode=disable
             - name: JWT_ISSUER
               value: auth-service
             - name: JWT_KEY_ID

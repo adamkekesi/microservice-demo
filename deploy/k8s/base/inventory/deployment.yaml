@@ -16,7 +16,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
-          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z postgres-inventory 5432; do echo waiting for postgres; sleep 2; done"]
         # Wait until auth is serving JWKS, so the one-shot Prime() at startup
         # succeeds and the /ready probe (which requires a cached key) passes.
         - name: wait-for-auth
@@ -38,7 +38,7 @@ spec:
                   name: app-secrets
                   key: POSTGRES_PASSWORD
             - name: DATABASE_URL
-              value: postgres://logistics:$(POSTGRES_PASSWORD)@postgres:5432/inventory_db?sslmode=disable
+              value: postgres://logistics:$(POSTGRES_PASSWORD)@postgres-inventory:5432/inventory_db?sslmode=disable
             - name: AUTH_JWKS_URL
               value: http://auth:8001/.well-known/jwks.json
             - name: JWT_ISSUER

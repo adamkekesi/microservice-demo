@@ -1,0 +1,74 @@
+# Dedicated Postgres instance for the auth service. One of three independent
+# single-node instances (inventory-db.yaml, shipment-db.yaml are the others);
+# they are separate servers, NOT replicas of one another. POSTGRES_DB makes the
+# image create auth_db on first boot, so no init script is needed.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-auth
+spec:
+  clusterIP: None
+  selector:
+    app: postgres-auth
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-auth
+spec:
+  serviceName: postgres-auth
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-auth
+  template:
+    metadata:
+      labels:
+        app: postgres-auth
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          # POSTGRES_USER / POSTGRES_PASSWORD come from the generated secret;
+          # POSTGRES_DB creates this instance's single database on first boot.
+          env:
+            - name: POSTGRES_DB
+              value: auth_db
+          envFrom:
+            - secretRef:
+                name: app-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 4Gi

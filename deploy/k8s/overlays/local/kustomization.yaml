@@ -9,22 +9,33 @@ resources:
   # Pins the Postgres volume to an ext4 image on the NVMe disk (local-only).
   - postgres-nvme-pv.yaml
 
-# Route the Postgres volume to the NVMe-backed StorageClass, and place PGDATA in
-# a subdirectory so initdb is not tripped up by the ext4 lost+found at the mount
-# root. Other claims are untouched and keep using the default `standard` class.
+# Route each Postgres instance's volume to the NVMe-backed StorageClass. Each
+# binds (via claimRef in postgres-nvme-pv.yaml) to its own folder on the shared
+# ext4 image. No PGDATA override needed: each PV points at a clean subdirectory,
+# which (unlike the ext4 root) has no lost+found to trip up initdb. Other claims
+# are untouched and keep using the default `standard` class.
 patches:
   - target:
       kind: StatefulSet
-      name: postgres
+      name: postgres-auth
     patch: |
       - op: add
         path: /spec/volumeClaimTemplates/0/spec/storageClassName
         value: postgres-local
+  - target:
+      kind: StatefulSet
+      name: postgres-inventory
+    patch: |
       - op: add
-        path: /spec/template/spec/containers/0/env
-        value:
-          - name: PGDATA
-            value: /var/lib/postgresql/data/pgdata
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: postgres-local
+  - target:
+      kind: StatefulSet
+      name: postgres-shipment
+    patch: |
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: postgres-local
 
 # Enable Datadog tracing (DD_TRACE_ENABLED=true) on the three services. Base
 # stays off-by-default; this is the demo opting in. Deploy the Agent the tracers

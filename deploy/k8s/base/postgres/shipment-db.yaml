@@ -1,36 +1,48 @@
-# Single Postgres instance holding the three logical databases. A StatefulSet
-# (not Deployment) so the data volume is stable across restarts. For a more
-# production-like split, give each service its own Postgres later.
+# Dedicated Postgres instance for the shipment service. See auth-db.yaml for
+# the rationale; this is an independent server, not a replica.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-shipment
+spec:
+  clusterIP: None
+  selector:
+    app: postgres-shipment
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
+  name: postgres-shipment
 spec:
-  serviceName: postgres
+  serviceName: postgres-shipment
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app: postgres-shipment
   template:
     metadata:
       labels:
-        app: postgres
+        app: postgres-shipment
     spec:
       containers:
         - name: postgres
           image: postgres:16-alpine
           ports:
             - containerPort: 5432
-          # POSTGRES_USER / POSTGRES_PASSWORD come from the generated secret.
+          env:
+            - name: POSTGRES_DB
+              value: shipment_db
           envFrom:
             - secretRef:
                 name: app-secrets
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
-            - name: init
-              mountPath: /docker-entrypoint-initdb.d
-              readOnly: true
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres"]
@@ -48,19 +60,11 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
-      volumes:
-        - name: init
-          configMap:
-            name: postgres-init
   volumeClaimTemplates:
     - metadata:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        # Cap each database volume at 10Gi. With dynamic provisioning the
-        # requested size IS the volume size (the ceiling). On a cloud
-        # StorageClass this is enforced; kind's local-path provisioner honors
-        # the request but does not hard-enforce the ceiling.
         resources:
           requests:
-            storage: 10Gi
+            storage: 4Gi

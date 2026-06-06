@@ -5,9 +5,9 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
-  - postgres/init-configmap.yaml
-  - postgres/service.yaml
-  - postgres/statefulset.yaml
+  - postgres/auth-db.yaml
+  - postgres/inventory-db.yaml
+  - postgres/shipment-db.yaml
   - auth/deployment.yaml
   - auth/service.yaml
   - auth/hpa.yaml

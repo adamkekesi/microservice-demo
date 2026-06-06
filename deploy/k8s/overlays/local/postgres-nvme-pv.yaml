@@ -1,20 +1,24 @@
-# Local-only storage wiring that pins the Postgres volume to an ext4 image file
-# living on the NVMe (NTFS) disk. The chain is:
+# Local-only storage wiring that pins each Postgres instance to its own folder
+# on the ext4 image living on the NVMe (NTFS) disk. For each service the chain is:
 #
-#   postgres-0  ->  PVC data-postgres-0  ->  PV postgres-nvme (this file)
-#     ->  node path /mnt/pg-data  (via kind extraMounts)
-#       ->  host  /mnt/pg-data    (loop-mounted ext4 image)
+#   postgres-<svc>-0  ->  PVC data-postgres-<svc>-0  ->  PV postgres-<svc>-nvme
+#     ->  node path /mnt/pg-data/<svc>   (via kind extraMounts of /mnt/pg-data)
+#       ->  host  /mnt/pg-data/<svc>     (folder on the loop-mounted ext4 image)
 #         ->  /mnt/nvme/postgres-data.img  (one file on the NTFS disk)
 #
-# A dedicated StorageClass keeps this scoped to Postgres only; every other claim
-# keeps using kind's default `standard` (local-path) class on the main disk.
+# All three instances share the single ext4 image but write to separate folders.
+# A dedicated StorageClass keeps this scoped to Postgres; every other claim keeps
+# using kind's default `standard` (local-path) class on the main disk.
+#
+# Each PV uses claimRef to pre-bind to a specific PVC, so auth/inventory/shipment
+# deterministically land in their own folders (otherwise binding to identical
+# PVs would be arbitrary). The host folders must exist before the cluster starts:
+#   sudo mkdir -p /mnt/pg-data/{auth,inventory,shipment}
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: postgres-local
-# No dynamic provisioning: we hand-craft the PV below. WaitForFirstConsumer lets
-# the scheduler place the pod before binding (correct for node-local volumes).
 provisioner: kubernetes.io/no-provisioner
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
@@ -22,19 +26,66 @@ reclaimPolicy: Retain
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: postgres-nvme
+  name: postgres-auth-nvme
 spec:
   capacity:
-    storage: 10Gi
+    storage: 4Gi
   accessModes: ["ReadWriteOnce"]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: postgres-local
-  # `local` (not hostPath): the recommended type for node-attached disks. The
-  # path is the directory INSIDE the kind node (mapped there by extraMounts).
+  claimRef:
+    namespace: logistics
+    name: data-postgres-auth-0
   local:
-    path: /mnt/pg-data
-  # local volumes require explicit node affinity. Single-node kind cluster, so
-  # this targets the one node, whose name is "<cluster>-control-plane".
+    path: /mnt/pg-data/auth
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - logistics-microservice-control-plane
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-inventory-nvme
+spec:
+  capacity:
+    storage: 4Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: postgres-local
+  claimRef:
+    namespace: logistics
+    name: data-postgres-inventory-0
+  local:
+    path: /mnt/pg-data/inventory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - logistics-microservice-control-plane
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-shipment-nvme
+spec:
+  capacity:
+    storage: 4Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: postgres-local
+  claimRef:
+    namespace: logistics
+    name: data-postgres-shipment-0
+  local:
+    path: /mnt/pg-data/shipment
   nodeAffinity:
     required:
       nodeSelectorTerms:
