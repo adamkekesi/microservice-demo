@@ -23,7 +23,9 @@ const swaggerUIPage = `<!DOCTYPE html>
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
   <script>
     window.onload = function () {
-      window.ui = SwaggerUIBundle({ url: "/openapi.yaml", dom_id: "#swagger-ui" });
+      // Relative URL so the spec resolves under whatever prefix the gateway
+      // serves /docs at (e.g. /shipment/docs -> /shipment/openapi.yaml).
+      window.ui = SwaggerUIBundle({ url: "openapi.yaml", dom_id: "#swagger-ui" });
     };
   </script>
 </body>
