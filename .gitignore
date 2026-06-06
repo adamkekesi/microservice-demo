@@ -1,0 +1,20 @@
+# Compiled binaries / build output
+/bin/
+/out/
+*.exe
+*.test
+
+# Coverage and profiling output
+*.out
+coverage.*
+*.prof
+
+# Local environment files (never commit secrets / keys)
+.env
+.env.local
+*.pem
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
