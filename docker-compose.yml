@@ -31,6 +31,11 @@ services:
       DD_APM_ENABLED: "true"
       DD_APM_NON_LOCAL_TRAFFIC: "true"
       DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+      # Log collection: without this the Agent never tails container stdout, so
+      # there are no logs to correlate to traces. Per-container source/service
+      # come from the com.datadoghq.ad.logs labels on each app service below.
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
     ports:
       - "8126:8126"
       - "8125:8125/udp"
@@ -65,6 +70,10 @@ services:
       DD_DOGSTATSD_PORT: "8125"
       DD_LOGS_INJECTION: "true"
       DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
+    # Tag collected logs as JSON-parsed Go logs under the same service as APM,
+    # so log↔trace correlation matches by service.
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"go","service":"auth-service"}]'
     ports:
       - "8001:8001"
 
@@ -95,6 +104,8 @@ services:
       DD_DOGSTATSD_PORT: "8125"
       DD_LOGS_INJECTION: "true"
       DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"go","service":"inventory-service"}]'
     ports:
       - "8002:8002"
 
@@ -126,6 +137,8 @@ services:
       DD_DOGSTATSD_PORT: "8125"
       DD_LOGS_INJECTION: "true"
       DD_PROFILING_ENABLED: ${DD_PROFILING_ENABLED:-false}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"go","service":"shipment-service"}]'
     ports:
       - "8003:8003"
 

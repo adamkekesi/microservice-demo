@@ -11,6 +11,12 @@ spec:
     metadata:
       labels:
         app: shipment
+        # Datadog Unified Service Tagging: makes the Agent stamp this pod's logs
+        # (collected via containerCollectAll) and metrics with the same
+        # service/env/version as APM, so log↔trace correlation matches by service.
+        tags.datadoghq.com/env: dev
+        tags.datadoghq.com/service: shipment-service
+        tags.datadoghq.com/version: "1.0.0"
     spec:
       initContainers:
         - name: wait-for-postgres
@@ -64,6 +70,8 @@ spec:
               value: "8126"
             - name: DD_DOGSTATSD_PORT
               value: "8125"
+            - name: DD_LOGS_INJECTION
+              value: "true"
             - name: DD_TRACE_ENABLED
               value: "false"
           livenessProbe:

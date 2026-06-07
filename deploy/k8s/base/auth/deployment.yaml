@@ -14,6 +14,12 @@ spec:
     metadata:
       labels:
         app: auth
+        # Datadog Unified Service Tagging: makes the Agent stamp this pod's logs
+        # (collected via containerCollectAll) and metrics with the same
+        # service/env/version as APM, so log↔trace correlation matches by service.
+        tags.datadoghq.com/env: dev
+        tags.datadoghq.com/service: auth-service
+        tags.datadoghq.com/version: "1.0.0"
     spec:
       initContainers:
         - name: wait-for-postgres
@@ -69,6 +75,8 @@ spec:
               value: "8126"
             - name: DD_DOGSTATSD_PORT
               value: "8125"
+            - name: DD_LOGS_INJECTION
+              value: "true"
             # No Datadog agent is deployed by default; disable tracing so the app
             # starts clean. Flip to "true" once you deploy the agent (see README).
             - name: DD_TRACE_ENABLED

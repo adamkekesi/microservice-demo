@@ -3,6 +3,8 @@ package observability
 import (
 	"context"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 	"github.com/gin-gonic/gin"
@@ -33,9 +35,12 @@ func NewLogger() *zap.Logger {
 func WithTrace(ctx context.Context, l *zap.Logger) *zap.Logger {
 	if span, ok := tracer.SpanFromContext(ctx); ok {
 		sctx := span.Context()
+		// Datadog's trace/span-id remappers expect strings; 64-bit ints also
+		// lose precision when a log line is parsed as JSON (float64). trace_id
+		// is already the 128-bit hex string in v2.
 		l = l.With(
-			zap.String("dd.trace_id", sctx.TraceID()), // 128-bit hex string in v2
-			zap.Uint64("dd.span_id", sctx.SpanID()),
+			zap.String("dd.trace_id", sctx.TraceID()),
+			zap.String("dd.span_id", strconv.FormatUint(sctx.SpanID(), 10)),
 			zap.String("dd.service", os.Getenv("DD_SERVICE")),
 			zap.String("dd.env", os.Getenv("DD_ENV")),
 			zap.String("dd.version", os.Getenv("DD_VERSION")),
@@ -67,6 +72,16 @@ func RequestLogger(base *zap.Logger) gin.HandlerFunc {
 		ctx := c.Request.Context()
 		l := WithTrace(ctx, base)
 		c.Request = c.Request.WithContext(ContextWithLogger(ctx, l))
+		start := time.Now()
 		c.Next()
+		// Emit one trace-correlated line per request. Without this the only
+		// logs produced are startup logs (no active span → no trace_id), so
+		// there is nothing for Datadog to correlate.
+		l.Info("request",
+			zap.String("http.method", c.Request.Method),
+			zap.String("http.path", c.FullPath()),
+			zap.Int("http.status", c.Writer.Status()),
+			zap.Duration("duration", time.Since(start)),
+		)
 	}
 }
