@@ -12,7 +12,8 @@ metadata:
   name: logistics-load
   namespace: logistics
 spec:
-  parallelism: 4
+  # 8 runner pods spread the large VU pool (and outbound sockets) for heavy load.
+  parallelism: 8
   # No `cleanup: post`: the launcher deletes the prior TestRun (which garbage-
   # collects its runner pods) before applying the next, and keeping the finished
   # pods lets `make soak-status` / `kubectl logs` show the last summary.
@@ -27,9 +28,9 @@ spec:
         value: http://ingress-nginx-controller.ingress-nginx.svc
       # Diurnal profile: 40 visitors/s during 08:00-12:00, 10/s otherwise.
       - name: VISITORS_PEAK
-        value: "1200"
+        value: "800"
       - name: VISITORS_OFF
-        value: "600"
+        value: "400"
       - name: PEAK_START_HOUR
         value: "8"
       - name: PEAK_END_HOUR
@@ -57,11 +58,11 @@ spec:
         value: changeme123
     resources:
       requests:
-        cpu: 150m
-        memory: 256Mi
-      # Headroom for the VU pool at higher rates (each VU costs a few MB). For
-      # very high visitors/s, raise `parallelism` above so VUs spread across more
-      # runner pods rather than piling onto a few.
+        cpu: 250m
+        memory: 512Mi
+      # Sized for a large VU pool (k6 VUs ~0.3-0.5MB each, so a few thousand VUs
+      # per runner fit easily). With parallelism=8 the per-pod VU count stays
+      # modest; raise `parallelism` further to spread load if a runner saturates.
       limits:
         cpu: "2"
-        memory: 1536Mi
+        memory: 3Gi

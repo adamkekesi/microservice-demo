@@ -78,14 +78,18 @@ function inPeakWindow(h, start, end) {
 const inPeak = inPeakWindow(currentHour(), PEAK_START, PEAK_END);
 const rate = inPeak ? PEAK_RATE : OFF_RATE;
 
-// VU pool sizing. A visitor iteration lasts ~1s (a few fast requests + up to ~1s
-// think-time), so sustaining `rate` visitors/s needs on the order of `rate`
-// concurrent VUs; maxVUs gives headroom for when the app slows under load. These
-// are the CLUSTER-WIDE totals — the operator divides them across the runner pods,
-// so don't make them huge or each runner OOMs (and the operator can choke just
-// computing the requirement). Override explicitly for unusual think-time/latency.
-const PRE_ALLOCATED_VUS = parseInt(__ENV.PRE_ALLOCATED_VUS || String(Math.max(50, Math.ceil(rate))), 10);
-const MAX_VUS = parseInt(__ENV.MAX_VUS || String(Math.max(200, Math.ceil(rate * 2))), 10);
+// VU pool sizing — tuned for STRESS/heavy-load. When the backend slows under
+// load each visitor iteration stretches to many seconds, so sustaining `rate`
+// visitors/s needs far more than `rate` concurrent VUs. We therefore allocate a
+// large pool (maxVUs ≈ rate×10) so k6 keeps opening concurrent sessions and
+// floods the backend instead of dropping iterations. k6 VUs are cheap here
+// (~0.3–0.5MB each — 600 VUs measured at ~270MiB), so this costs little RAM; the
+// runner memory limit in ../k8s/testrun.yaml is sized for it. These are the
+// CLUSTER-WIDE totals; the operator divides them across the runner pods (raise
+// `parallelism` to spread the VUs/sockets across more pods). Override
+// PRE_ALLOCATED_VUS / MAX_VUS to push harder still.
+const PRE_ALLOCATED_VUS = parseInt(__ENV.PRE_ALLOCATED_VUS || String(Math.max(100, Math.ceil(rate * 2))), 10);
+const MAX_VUS = parseInt(__ENV.MAX_VUS || String(Math.max(500, Math.ceil(rate * 10))), 10);
 
 export const options = {
   discardResponseBodies: true,
