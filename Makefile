@@ -74,7 +74,7 @@ help:
 	@echo "  k6-operator-down uninstall the k6 operator"
 	@echo "  soak-up          start the continuous diurnal soak (operator + CronJobs + first run)"
 	@echo "  soak-status      TestRun / runner pods / CronJobs / HPAs / DB row counts"
-	@echo "  soak-prune-now   trigger one hourly delete wave immediately"
+	@echo "  soak-prune-now   trigger one delete wave immediately"
 	@echo "  soak-down        stop the soak (CronJobs + TestRun + ConfigMaps)"
 
 # tidy runs in module mode (GOWORK=off) so each go.mod is tidied against the
@@ -294,14 +294,14 @@ loadtest-clean:
 k6-operator-down:
 	helm uninstall k6-operator --kube-context $(KIND_CONTEXT) --namespace $(K6_OPERATOR_NS) || true
 
-# --- continuous soak (diurnal, resumable, hourly delete wave) -----------------
+# --- continuous soak (diurnal, resumable, 3-hourly delete wave) ---------------
 
 K6_SOAK_DIR     := loadtest/k8s/soak
 K6_TESTRUN_CM   := k6-testrun-manifest
 
 # Start the continuous soak: the k6 script ConfigMap, a ConfigMap holding the
 # TestRun manifest (mounted by the launcher), the soak RBAC + two CronJobs
-# (hourly launcher = resumability; hourly delete wave = retention), and an
+# (hourly launcher = resumability; 3-hourly delete wave = retention), and an
 # initial TestRun so load starts immediately instead of at the next top-of-hour.
 soak-up: k6-operator-up
 	$(KUBECTL) -n $(LOADTEST_NS) create configmap $(K6_CONFIGMAP) \
@@ -311,11 +311,11 @@ soak-up: k6-operator-up
 	$(KUBECTL) apply -f $(K6_SOAK_DIR)
 	$(KUBECTL) delete -f $(K6_TESTRUN) --ignore-not-found
 	$(KUBECTL) apply -f $(K6_TESTRUN)
-	@echo "Soak started. Launcher relaunches hourly (resumable); delete wave runs at :30."
+	@echo "Soak started. Launcher relaunches hourly (resumable); delete wave runs at :30 every 3h."
 	@echo "Watch: make soak-status   |   logs: make loadtest-logs"
 
 # Snapshot of the soak: TestRun, runner pods, CronJobs, and live DB row counts
-# per service (proof the hourly delete wave keeps storage bounded).
+# per service (proof the 3-hourly delete wave keeps storage bounded).
 soak-status:
 	@echo "== TestRun =="; $(KUBECTL) -n $(LOADTEST_NS) get testruns 2>/dev/null || true
 	@echo "== runner pods =="; $(KUBECTL) -n $(LOADTEST_NS) get pods -l k6_cr=logistics-load 2>/dev/null || true

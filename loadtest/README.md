@@ -17,7 +17,7 @@ loadtest/
 ├── k8s/soak/
 │   ├── rbac.yaml            # ServiceAccount/Role for the launcher
 │   ├── cronjob-launcher.yaml# hourly: relaunch the TestRun (resumability)
-│   └── cronjob-prune.yaml   # hourly: the "giant delete wave" (retention)
+│   └── cronjob-prune.yaml   # every 3h: the "giant delete wave" (retention)
 └── README.md
 ```
 
@@ -49,7 +49,8 @@ row existence); the next re-login then re-registers it on demand.
 order confirms/cancels it and then `DELETE`s its own shipment and reservation —
 using the new per-resource delete endpoints.
 
-**Giant delete wave every hour.** The **`k6-delete-wave` CronJob** (at :30) logs
+**Giant delete wave every 3 hours.** The **`k6-delete-wave` CronJob** (at :30,
+every 3rd hour) logs
 in as admin and calls each service's bulk-purge endpoint
 (`DELETE /shipment/shipments?before=…`, `…/inventory/reservations?before=…`,
 `…/inventory/items?sku_prefix=ITEM-LOAD-`, `…/auth/users?before=…`). These
