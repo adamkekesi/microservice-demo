@@ -157,30 +157,67 @@ function bearer(token) {
 
 // --- setup: ensure fixtures exist (idempotent / race-safe per runner) -------
 
+// setup() runs once per runner before any visitor traffic. Crucially, if it
+// THROWS, k6 aborts the entire run and the hour produces ZERO load. Under heavy
+// load — or during a rollout — the backend (or the ingress in front of it) can
+// briefly return 5xx *HTML* error pages, so two rules apply throughout setup:
+//   1. never call res.json() on a response that isn't a 2xx JSON body, and
+//   2. retry transient failures with backoff instead of throwing, so a momentary
+//      5xx just delays setup rather than wiping out the whole hourly run.
+const SETUP_RETRIES = parseInt(__ENV.SETUP_RETRIES || '30', 10);
+const SETUP_RETRY_BACKOFF_MS = parseInt(__ENV.SETUP_RETRY_BACKOFF_MS || '2000', 10);
+
+// True only for a JSON response body we can safely parse. An nginx 5xx error
+// page is text/html, which is exactly what makes res.json() throw.
+function isJSON(res) {
+  const ct = res.headers['Content-Type'] || res.headers['content-type'] || '';
+  return ct.indexOf('application/json') !== -1;
+}
+
+// retry runs fn until it returns a non-null value, sleeping SETUP_RETRY_BACKOFF
+// between attempts. fn returns null to signal "transient, try again". Throws only
+// after exhausting the budget (a genuinely broken stack), never on a single 5xx.
+function retry(what, fn) {
+  for (let i = 0; i < SETUP_RETRIES; i++) {
+    const v = fn();
+    if (v !== null && v !== undefined) return v;
+    sleep(SETUP_RETRY_BACKOFF_MS / 1000);
+  }
+  throw new Error(`setup: ${what} failed after ${SETUP_RETRIES} attempts — is the stack up?`);
+}
+
 export function setup() {
-  const adminToken = login(ADMIN_EMAIL, ADMIN_PASSWORD);
-  if (!adminToken) throw new Error('admin login failed — is the stack up?');
+  const adminToken = retry('admin login', () => login(ADMIN_EMAIL, ADMIN_PASSWORD));
 
   const whId = ensure(`${INV}/warehouses`, { code: 'WH-LOAD', name: 'Load Warehouse' }, 'code', 'WH-LOAD', adminToken);
   const itemId = ensure(`${INV}/items`, { sku: 'SKU-LOAD', name: 'Load Item' }, 'sku', 'SKU-LOAD', adminToken);
 
   // Huge on-hand so sustained reserve/confirm never exhausts stock over a soak.
-  http.put(
-    `${INV}/stock`,
-    JSON.stringify({ warehouse_id: whId, item_id: itemId, quantity_on_hand: 1000000000 }),
-    bearer(adminToken),
-  );
+  retry('seed stock', () => {
+    const r = http.put(
+      `${INV}/stock`,
+      JSON.stringify({ warehouse_id: whId, item_id: itemId, quantity_on_hand: 1000000000 }),
+      { ...bearer(adminToken), responseType: 'text' },
+    );
+    return r.status >= 200 && r.status < 300 ? true : null;
+  });
   return { whId, itemId };
 }
 
 function ensure(listURL, body, field, value, token) {
-  const res = http.post(listURL, JSON.stringify(body), { ...bearer(token), responseType: 'text' });
-  if (res.status === 201) return res.json('id');
-  // Conflict (another runner won the race) — find it in the list.
-  const list = http.get(listURL, { ...bearer(token), responseType: 'text' });
-  const found = (list.json() || []).find((o) => o[field] === value);
-  if (!found) throw new Error(`setup: could not create or find ${value} (status ${res.status})`);
-  return found.id;
+  return retry(`create/find ${value}`, () => {
+    const res = http.post(listURL, JSON.stringify(body), { ...bearer(token), responseType: 'text' });
+    if (res.status === 201 && isJSON(res)) return res.json('id');
+    // Transient: a 5xx (or any non-JSON error page) under heavy load / rollout.
+    // Returning null retries rather than crashing the whole run on res.json().
+    if (res.status >= 500 || !isJSON(res)) return null;
+    // A JSON 4xx is the conflict case (another runner won the race) — find it in
+    // the list. Guard the GET too: it can hit the same transient 5xx.
+    const list = http.get(listURL, { ...bearer(token), responseType: 'text' });
+    if (list.status !== 200 || !isJSON(list)) return null;
+    const found = (list.json() || []).find((o) => o[field] === value);
+    return found ? found.id : null;
+  });
 }
 
 // --- the visitor session ---------------------------------------------------
