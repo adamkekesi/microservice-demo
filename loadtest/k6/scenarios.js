@@ -58,16 +58,34 @@ const TOKEN_REFRESH_BUFFER_MS = 60000; // re-login when <60s remain
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+// Fractional hour in [0, 24) with TZ_OFFSET applied. This is UTC-based: at
+// 00:17 UTC with TZ_OFFSET=0 it is ~0.28 (02:17 CEST is 00:17 UTC). Set
+// TZ_OFFSET_HOURS if you want the peak window expressed in local time instead.
 function currentHour() {
   const now = new Date();
-  let h = now.getUTCHours() + now.getUTCMinutes() / 60 + TZ_OFFSET;
-  h %= 24;
+  let h = (now.getUTCHours() + now.getUTCMinutes() / 60 + TZ_OFFSET) % 24;
   if (h < 0) h += 24;
   return h;
 }
 
-const inPeak = currentHour() >= PEAK_START && currentHour() < PEAK_END;
+// True when h is inside the [start, end) window, handling windows that wrap
+// past midnight (end < start). E.g. start=8, end=3 is active 08:00-24:00 AND
+// 00:00-03:00 — so 02:00 is peak, 05:00 is not.
+function inPeakWindow(h, start, end) {
+  return start <= end ? h >= start && h < end : h >= start || h < end;
+}
+
+const inPeak = inPeakWindow(currentHour(), PEAK_START, PEAK_END);
 const rate = inPeak ? PEAK_RATE : OFF_RATE;
+
+// VU pool sizing. A visitor iteration lasts ~1s (a few fast requests + up to ~1s
+// think-time), so sustaining `rate` visitors/s needs on the order of `rate`
+// concurrent VUs; maxVUs gives headroom for when the app slows under load. These
+// are the CLUSTER-WIDE totals — the operator divides them across the runner pods,
+// so don't make them huge or each runner OOMs (and the operator can choke just
+// computing the requirement). Override explicitly for unusual think-time/latency.
+const PRE_ALLOCATED_VUS = parseInt(__ENV.PRE_ALLOCATED_VUS || String(Math.max(50, Math.ceil(rate))), 10);
+const MAX_VUS = parseInt(__ENV.MAX_VUS || String(Math.max(200, Math.ceil(rate * 2))), 10);
 
 export const options = {
   discardResponseBodies: true,
@@ -80,8 +98,8 @@ export const options = {
       rate,
       timeUnit: '1s',
       duration: DURATION,
-      preAllocatedVUs: Math.max(50, Math.ceil(rate * 2)),
-      maxVUs: Math.max(200, Math.ceil(rate * 10)),
+      preAllocatedVUs: PRE_ALLOCATED_VUS,
+      maxVUs: MAX_VUS,
     },
   },
   // Soak thresholds: looser than a spike test — we care that the system stays
