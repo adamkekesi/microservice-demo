@@ -45,7 +45,7 @@ func NewRouter(d Deps) *gin.Engine {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	registerDocs(r) // GET /docs (Swagger UI) + GET /openapi.yaml
+	registerDocs(r) // GET /auth/docs (Swagger UI) + GET /auth/openapi.yaml
 	r.GET("/.well-known/jwks.json", h.JWKS)
 	r.POST("/auth/register", h.Register)
 	r.POST("/auth/login", h.Login)

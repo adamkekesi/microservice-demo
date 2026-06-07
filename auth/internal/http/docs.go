@@ -33,11 +33,17 @@ const swaggerUIPage = `<!DOCTYPE html>
 
 // registerDocs serves the embedded OpenAPI spec and a Swagger UI page. Both are
 // public (no auth), like /health.
+//
+// Unlike inventory/shipment, the gateway passes the /auth prefix through to this
+// service unstripped, so the docs are registered under /auth/* (matching the
+// service's other routes) to be reachable at /auth/docs through the gateway. The
+// Swagger UI page loads the spec via a relative URL, so /auth/docs resolves it
+// to /auth/openapi.yaml.
 func registerDocs(r *gin.Engine) {
-	r.GET("/openapi.yaml", func(c *gin.Context) {
+	r.GET("/auth/openapi.yaml", func(c *gin.Context) {
 		c.Data(http.StatusOK, "application/yaml", openapiSpec)
 	})
-	r.GET("/docs", func(c *gin.Context) {
+	r.GET("/auth/docs", func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(swaggerUIPage))
 	})
 }
