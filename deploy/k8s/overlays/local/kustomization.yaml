@@ -42,18 +42,11 @@ patches:
 # send to with `make datadog-up`.
 components:
   - ../../components/datadog
-
-# Secret consumed by Postgres (POSTGRES_*) and auth (ADMIN_*). Generated here so
-# the values live in the overlay, not the base; the name-hash makes pods restart
-# automatically when a value changes. Fine for local dev — do NOT commit real
-# secrets for a shared/cloud environment.
-secretGenerator:
-  - name: app-secrets
-    literals:
-      - POSTGRES_USER=logistics
-      - POSTGRES_PASSWORD=logistics
-      - ADMIN_EMAIL=admin@example.com
-      - ADMIN_PASSWORD=changeme123
+  # app-secrets (POSTGRES_*, ADMIN_*) consumed by Postgres and auth. Shared with
+  # the migrate kustomization so `make migrate` can provision the same secret
+  # standalone; the stable name lets the migrate Jobs reference it. See the
+  # component for details.
+  - ../../components/app-secrets
 
 # Pin every service to the locally-built, kind-loaded image (see `make images`).
 images:

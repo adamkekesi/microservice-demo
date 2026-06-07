@@ -38,7 +38,7 @@ KUBECTL        := kubectl --context $(KIND_CONTEXT)
 .PHONY: help tidy fmt build test test-integration test-all lint \
         run-auth run-inventory run-shipment seed compose-up compose-down docker-build \
         cluster-up ingress-up metrics-up datadog-up cluster-verify cluster-down \
-        images deploy undeploy smoke-k8s k8s-up \
+        images migrate deploy undeploy smoke-k8s k8s-up \
         k6-operator-up k6-operator-down loadtest loadtest-logs loadtest-clean \
         soak-up soak-status soak-prune-now soak-down
 
@@ -62,6 +62,7 @@ help:
 	@echo "  datadog-up       install Datadog Operator + Agent (needs DD_API_KEY)"
 	@echo "  cluster-verify   prove ingress routing works (deploys + deletes a smoke app)"
 	@echo "  images           build the 3 service images and load them into kind"
+	@echo "  migrate          run DB schema migrations as a separate step (before app rollout)"
 	@echo "  deploy           apply the app manifests (kubectl apply -k overlays/local)"
 	@echo "  smoke-k8s        happy-path smoke test through the gateway (localhost:8080)"
 	@echo "  undeploy         delete the app manifests from the cluster"
@@ -228,13 +229,36 @@ images:
 	  kind load docker-image logistics-$$s:dev --name $(KIND_CLUSTER) || exit 1; \
 	done
 
+# Apply DB schema migrations as a discrete step, decoupled from the app rollout.
+# Each service's image runs its `migrate` subcommand once and exits (app pods no
+# longer apply DDL — they verify the schema via EnsureMigrated and crash-loop until
+# this completes). Jobs are immutable, so `replace --force` recreates them (like
+# the k6 launcher). Requires Postgres to be up (deploy waits for it first).
+K8S_MIGRATE_DIR := deploy/k8s/migrate
+
+migrate:
+	@echo "== ensuring app-secrets exists =="
+	$(KUBECTL) apply -k $(K8S_MIGRATE_DIR)
+	@for s in $(SERVICES); do \
+	  echo "== migrate $$s =="; \
+	  $(KUBECTL) -n logistics replace --force -f $(K8S_MIGRATE_DIR)/$$s-migrate-job.yaml || exit 1; \
+	done
+	@echo "waiting for migrate jobs to complete..."
+	@$(KUBECTL) -n logistics wait --for=condition=complete --timeout=300s \
+	  job/auth-migrate job/inventory-migrate job/shipment-migrate || { \
+	  for s in $(SERVICES); do echo "== logs $$s-migrate =="; $(KUBECTL) -n logistics logs job/$$s-migrate --tail=50 || true; done; \
+	  exit 1; }
+	@echo "migrations applied."
+
 deploy:
 	$(KUBECTL) apply -k $(K8S_OVERLAY)
 	$(KUBECTL) -n logistics rollout status statefulset/postgres-auth statefulset/postgres-inventory statefulset/postgres-shipment --timeout=180s
+	$(MAKE) migrate
 	$(KUBECTL) -n logistics rollout status deploy/auth deploy/inventory deploy/shipment --timeout=180s
 
 undeploy:
 	$(KUBECTL) delete -k $(K8S_OVERLAY) --ignore-not-found
+	$(KUBECTL) -n logistics delete -f $(K8S_MIGRATE_DIR) --ignore-not-found
 
 # Runs the happy path through the gateway. Each service sits behind its own
 # prefix (/auth, /inventory, /shipment); auth keeps its prefix, the other two

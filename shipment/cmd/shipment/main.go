@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"github.com/adamkekesi/microservice-demo/platform/authn"
@@ -19,8 +20,24 @@ import (
 )
 
 func main() {
-	port := config.String("PORT", "8003")
 	dsn := config.MustString("DATABASE_URL")
+
+	logger := observability.NewLogger()
+	defer func() { _ = logger.Sync() }()
+
+	// `shipment migrate` applies pending migrations and exits — run from the
+	// dedicated migrate Job, decoupled from the app rollout. App pods never apply
+	// DDL; they only verify the schema via EnsureMigrated below. Kept above the
+	// other MustString reads so the migrate Job needs only DATABASE_URL.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if err := database.RunMigrations(dsn, migrationsDir()); err != nil {
+			logger.Fatal("run migrations", zap.Error(err))
+		}
+		logger.Info("migrations applied")
+		return
+	}
+
+	port := config.String("PORT", "8003")
 	jwksURL := config.MustString("AUTH_JWKS_URL")
 	issuer := config.String("JWT_ISSUER", "auth-service")
 	jwksTTL := config.Seconds("JWKS_CACHE_TTL_SECONDS", 600)
@@ -31,8 +48,6 @@ func main() {
 	observability.InitTracer()
 	defer observability.StopTracer()
 	defer observability.InitProfiler()()
-	logger := observability.NewLogger()
-	defer func() { _ = logger.Sync() }()
 
 	metrics, err := observability.NewMetrics()
 	if err != nil {
@@ -44,8 +59,8 @@ func main() {
 	if err != nil {
 		logger.Fatal("connect database", zap.Error(err))
 	}
-	if err := database.RunMigrations(dsn, migrationsDir()); err != nil {
-		logger.Fatal("run migrations", zap.Error(err))
+	if err := database.EnsureMigrated(dsn, migrationsDir()); err != nil {
+		logger.Fatal("database schema not migrated", zap.Error(err))
 	}
 
 	verifier := authn.NewVerifier(jwksURL, issuer, jwksTTL)

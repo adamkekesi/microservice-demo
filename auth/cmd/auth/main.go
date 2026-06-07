@@ -20,8 +20,24 @@ import (
 )
 
 func main() {
-	port := config.String("PORT", "8001")
 	dsn := config.MustString("DATABASE_URL")
+
+	logger := observability.NewLogger()
+	defer func() { _ = logger.Sync() }()
+
+	// `auth migrate` applies pending migrations and exits — run from the dedicated
+	// migrate Job, decoupled from the app rollout. App pods never apply DDL; they
+	// only verify the schema via EnsureMigrated below. Kept above the other config
+	// reads so the migrate Job needs only DATABASE_URL.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if err := database.RunMigrations(dsn, migrationsDir()); err != nil {
+			logger.Fatal("run migrations", zap.Error(err))
+		}
+		logger.Info("migrations applied")
+		return
+	}
+
+	port := config.String("PORT", "8001")
 	issuer := config.String("JWT_ISSUER", "auth-service")
 	kid := config.String("JWT_KEY_ID", "auth-key-1")
 	ttl := config.Seconds("JWT_TTL_SECONDS", 900)
@@ -30,15 +46,13 @@ func main() {
 	observability.InitTracer()
 	defer observability.StopTracer()
 	defer observability.InitProfiler()()
-	logger := observability.NewLogger()
-	defer func() { _ = logger.Sync() }()
 
 	db, err := database.Connect(serviceName, dsn)
 	if err != nil {
 		logger.Fatal("connect database", zap.Error(err))
 	}
-	if err := database.RunMigrations(dsn, migrationsDir()); err != nil {
-		logger.Fatal("run migrations", zap.Error(err))
+	if err := database.EnsureMigrated(dsn, migrationsDir()); err != nil {
+		logger.Fatal("database schema not migrated", zap.Error(err))
 	}
 
 	userRepo := repository.NewUserRepository(db)

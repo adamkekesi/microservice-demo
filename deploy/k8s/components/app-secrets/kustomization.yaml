@@ -1,0 +1,21 @@
+# Shared app-secrets generator. Included by both the local overlay (for the apps)
+# and the migrate kustomization (so `make migrate` can provision the secret on its
+# own, decoupled from a full app deploy). Defining it once here keeps the literals
+# from drifting between the two.
+#
+# disableNameSuffixHash keeps the name a stable `app-secrets` (no content hash) so
+# the standalone migrate Jobs in deploy/k8s/migrate/ can reference it by a fixed
+# name. Trade-off: changing a value no longer auto-restarts pods — fine for local
+# dev, where `make deploy` rolls explicitly. Do NOT commit real secrets.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+secretGenerator:
+  - name: app-secrets
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - POSTGRES_USER=logistics
+      - POSTGRES_PASSWORD=logistics
+      - ADMIN_EMAIL=admin@example.com
+      - ADMIN_PASSWORD=changeme123

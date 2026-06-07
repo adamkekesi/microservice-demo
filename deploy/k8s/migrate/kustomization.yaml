@@ -1,0 +1,12 @@
+# Provisions just the app-secrets the migrate Jobs need, so `make migrate` works
+# standalone (decoupled from a full `apply -k` of the app overlay). The
+# <svc>-migrate-job.yaml files in this directory are intentionally NOT listed as
+# resources — they are immutable Jobs applied separately via `kubectl replace
+# --force` (see `make migrate`), which `apply -k` here leaves untouched.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: logistics
+
+components:
+  - ../components/app-secrets
