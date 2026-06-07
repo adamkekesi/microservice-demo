@@ -52,10 +52,12 @@ using the new per-resource delete endpoints.
 **Giant delete wave every hour.** The **`k6-delete-wave` CronJob** (at :30) logs
 in as admin and calls each service's bulk-purge endpoint
 (`DELETE /shipment/shipments?before=…`, `…/inventory/reservations?before=…`,
-`…/auth/users?before=…`). Three big server-side deletes remove the hour's
-accumulated terminal shipments/reservations and throwaway users, keeping each
-service's Postgres (a dedicated instance per service, each a 10Gi PVC) bounded.
-Active (PENDING) records and the fixtures are left untouched.
+`…/inventory/items?sku_prefix=ITEM-LOAD-`, `…/auth/users?before=…`). These
+server-side deletes remove the hour's accumulated terminal shipments/reservations,
+the throwaway catalog items the upkeep path creates (purged by SKU prefix, their
+stock cascading), and throwaway users — keeping each service's Postgres (a
+dedicated instance per service, each a 10Gi PVC) bounded. Active (PENDING) records
+and the fixtures (incl. the `SKU-LOAD` item) are left untouched.
 
 **No k6 metrics exported.** The services already emit Datadog traces/metrics
 (including the new `logistics.*.deleted` / `logistics.*.purged` series), so k6

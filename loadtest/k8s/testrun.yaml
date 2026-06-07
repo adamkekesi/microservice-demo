@@ -40,7 +40,7 @@ spec:
         value: "0"
       # Fraction of visitors who place (and then delete) an order.
       - name: ORDER_RATE
-        value: "0.3"
+        value: "0.6"
       # 70% of visits are returning users (reuse a pooled account, just log in);
       # the rest are first-time signups (register + log in). Eases auth bcrypt
       # load and shrinks user-row growth.

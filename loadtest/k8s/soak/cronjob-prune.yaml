@@ -39,6 +39,7 @@ spec:
                   for url in \
                     "$BASE/shipment/shipments?before=$CUTOFF" \
                     "$BASE/inventory/reservations?before=$CUTOFF" \
+                    "$BASE/inventory/items?sku_prefix=ITEM-LOAD-" \
                     "$BASE/auth/users?before=$CUTOFF"; do
                     echo "DELETE $url"
                     curl -fsS -XDELETE "$url" -H "Authorization: Bearer $TOKEN"

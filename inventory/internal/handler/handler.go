@@ -70,6 +70,23 @@ func (h *Handler) ListItems(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func (h *Handler) DeleteItem(c *gin.Context) {
+	if err := h.svc.DeleteItem(c.Request.Context(), c.Param("id")); err != nil {
+		apperror.Respond(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) PurgeItems(c *gin.Context) {
+	resp, err := h.svc.PurgeItems(c.Request.Context(), c.Query("sku_prefix"))
+	if err != nil {
+		apperror.Respond(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 func (h *Handler) SetStock(c *gin.Context) {
 	var req model.SetStockRequest
 	if !bindJSON(c, &req) {

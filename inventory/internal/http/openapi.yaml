@@ -71,6 +71,28 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { description: "SKU_TAKEN", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [items]
+      summary: Bulk-delete items by SKU prefix (operator/admin)
+      description: "Retention sweep: deletes items whose SKU starts with `sku_prefix`; their stock rows cascade."
+      parameters:
+        - { name: sku_prefix, in: query, required: true, schema: { type: string }, description: "Only items whose SKU starts with this prefix are deleted" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Purge" } } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /items/{id}:
+    delete:
+      tags: [items]
+      summary: Delete an item (operator/admin)
+      description: "Deletes the item; its stock rows are removed via ON DELETE CASCADE. Succeeds regardless of any reservations referencing the item."
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /stock:
     get:
       tags: [stock]

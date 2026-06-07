@@ -50,6 +50,17 @@ const RETURNING_RATE = parseFloat(__ENV.RETURNING_RATE || '0.7');
 const RETURNING_POOL = parseInt(__ENV.RETURNING_POOL || '1000', 10); // cap on distinct returning identities
 const VISITOR_PASSWORD = 'loadtest123';
 
+// Inventory write load. A fraction of visitors also act as operators, driving the
+// admin-only POST /items and PUT /stock endpoints: each upkeep visit creates a
+// batch of brand-new unique items (SKU prefix `ITEM-LOAD-`) and stocks each one,
+// so every POST is a real insert (201). The items are NOT deleted here — the
+// hourly delete-wave purges everything with that SKU prefix (see
+// loadtest/k8s/soak/cronjob-prune.yaml), keeping the catalog bounded across the
+// soak while leaving the persistent fixture item (SKU-LOAD) untouched.
+const RESTOCK_RATE = parseFloat(__ENV.RESTOCK_RATE || '0.2'); // fraction of visitors doing inventory upkeep
+const ITEMS_PER_VISIT = parseInt(__ENV.ITEMS_PER_VISIT || '5', 10); // unique items created per upkeep visit
+const STOCK_PUTS_PER_VISIT = parseInt(__ENV.STOCK_PUTS_PER_VISIT || '3', 10); // PUT /stock per created item
+
 // Per-VU token cache (email -> { token, exp }). VU module-scope state persists
 // across that VU's iterations, so a returning user reuses its token within TTL.
 const tokenCache = {};
@@ -155,6 +166,18 @@ function bearer(token) {
   return { headers: { ...JSON_HEADERS, Authorization: `Bearer ${token}` } };
 }
 
+// Per-VU admin token for the inventory-upkeep path, cached and refreshed exactly
+// like a returning user's. POST /items and PUT /stock require the operator/admin
+// role, so an upkeep visit logs in as admin once and reuses the token across its
+// iterations (keyed by ADMIN_EMAIL, so it never collides with visitor accounts).
+function adminToken() {
+  const cached = tokenCache[ADMIN_EMAIL];
+  if (cached && cached.exp - Date.now() > TOKEN_REFRESH_BUFFER_MS) return cached.token;
+  const token = login(ADMIN_EMAIL, ADMIN_PASSWORD);
+  if (token) tokenCache[ADMIN_EMAIL] = { token, exp: Date.now() + TOKEN_TTL_MS };
+  return token;
+}
+
 // --- setup: ensure fixtures exist (idempotent / race-safe per runner) -------
 
 // setup() runs once per runner before any visitor traffic. Crucially, if it
@@ -238,7 +261,46 @@ export function visitor(data) {
     placeAndCleanOrder(data, token);
   }
 
+  // A fraction of visitors also do inventory upkeep (admin POST /items + PUT
+  // /stock), adding write load on the catalog and stock tables.
+  if (Math.random() < RESTOCK_RATE) {
+    manageInventory(data);
+  }
+
   sleep(Math.random());
+}
+
+// Operator-style inventory upkeep. Creates a batch of brand-new unique items and
+// stocks each one a few times — driving the admin-only POST /items and PUT /stock
+// write paths. Every POST is a real insert (unique SKU under the `ITEM-LOAD-`
+// prefix). The items are left in place; the hourly delete-wave purges them by SKU
+// prefix (loadtest/k8s/soak/cronjob-prune.yaml), so the catalog stays bounded.
+function manageInventory(data) {
+  const token = adminToken();
+  if (!token) return;
+  const h = { ...bearer(token), responseType: 'text' };
+
+  for (let i = 0; i < ITEMS_PER_VISIT; i++) {
+    // Unique SKU per call -> always a fresh insert (201).
+    const sku = `ITEM-LOAD-${__VU}-${__ITER}-${Date.now()}-${i}`;
+    const createRes = http.post(`${INV}/items`, JSON.stringify({ sku, name: `Load Item ${sku}` }), h);
+    if (!check(createRes, { 'item created': (r) => r.status === 201 })) continue;
+    const itemId = createRes.json('id');
+
+    // Stock the new item a few times; PUT /stock is an upsert (always 200), and a
+    // varied quantity makes each call a real update.
+    for (let j = 0; j < STOCK_PUTS_PER_VISIT; j++) {
+      check(http.put(
+        `${INV}/stock`,
+        JSON.stringify({
+          warehouse_id: data.whId,
+          item_id: itemId,
+          quantity_on_hand: 1000000000 + Math.floor(Math.random() * 1000000),
+        }),
+        h,
+      ), { 'stock updated': (r) => r.status === 200 });
+    }
+  }
 }
 
 function placeAndCleanOrder(data, token) {

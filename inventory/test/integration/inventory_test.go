@@ -344,6 +344,96 @@ func TestDuplicateCodeAndSKU(t *testing.T) {
 	require.Equal(t, "SKU_TAKEN", parseErr(t, dupItem).Error.Code)
 }
 
+// DELETE /items/{id} -> 204; the item's stock rows cascade away and the item is gone.
+func TestDeleteItemCascadesStock(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	wh, item := createWHItemStock(t, router, op, 100)
+
+	rec := doJSON(t, router, http.MethodDelete, "/items/"+item, op, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	// Stock rows are removed by the ON DELETE CASCADE FK.
+	var stockRows int64
+	require.NoError(t, testDB.Model(&model.Stock{}).Where("item_id = ?", item).Count(&stockRows).Error)
+	require.EqualValues(t, 0, stockRows, "stock rows should cascade-delete with the item")
+
+	// The item itself is gone -> a stock lookup 404s on the missing item.
+	require.Equal(t, http.StatusNotFound,
+		doJSON(t, router, http.MethodGet, "/stock?warehouse_id="+wh+"&item_id="+item, op, nil).Code)
+}
+
+// Deletion succeeds even with an active PENDING reservation referencing the item
+// (reservations carry no FK and are intentionally not checked).
+func TestDeleteItemWithReservationSucceeds(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	wh, item := createWHItemStock(t, router, op, 100)
+	require.Equal(t, http.StatusCreated, reserve(t, router, cust, wh, item, 10).Code)
+
+	rec := doJSON(t, router, http.MethodDelete, "/items/"+item, op, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+// DELETE unknown item -> 404; a customer may not delete (admin-only) -> 403.
+func TestDeleteItemNotFoundAndAuthz(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+
+	require.Equal(t, http.StatusNotFound,
+		doJSON(t, router, http.MethodDelete, "/items/"+uuid.NewString(), op, nil).Code)
+	require.Equal(t, http.StatusForbidden,
+		doJSON(t, router, http.MethodDelete, "/items/"+uuid.NewString(), cust, nil).Code)
+}
+
+// Bulk purge by SKU prefix removes matching items (stock cascades) and leaves
+// non-matching items; a blank prefix is rejected so the catalog can't be wiped.
+func TestPurgeItemsBySKUPrefix(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+
+	wRec := doJSON(t, router, http.MethodPost, "/warehouses", op,
+		model.CreateWarehouseRequest{Code: "WH-" + uuid.NewString()[:8], Name: "WH"})
+	require.Equal(t, http.StatusCreated, wRec.Code, wRec.Body.String())
+	var w model.WarehouseResponse
+	require.NoError(t, json.Unmarshal(wRec.Body.Bytes(), &w))
+
+	mkItem := func(sku string, qty int) string {
+		iRec := doJSON(t, router, http.MethodPost, "/items", op, model.CreateItemRequest{SKU: sku, Name: sku})
+		require.Equal(t, http.StatusCreated, iRec.Code, iRec.Body.String())
+		var it model.ItemResponse
+		require.NoError(t, json.Unmarshal(iRec.Body.Bytes(), &it))
+		require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodPut, "/stock", op,
+			model.SetStockRequest{WarehouseID: w.ID, ItemID: it.ID, QuantityOnHand: intPtr(qty)}).Code)
+		return it.ID
+	}
+
+	load1 := mkItem("ITEM-LOAD-"+uuid.NewString(), 10)
+	load2 := mkItem("ITEM-LOAD-"+uuid.NewString(), 20)
+	fixture := mkItem("SKU-LOAD", 30)
+
+	// Blank prefix is rejected (never wipe the whole catalog).
+	require.Equal(t, http.StatusBadRequest,
+		doJSON(t, router, http.MethodDelete, "/items?sku_prefix=", op, nil).Code)
+
+	rec := doJSON(t, router, http.MethodDelete, "/items?sku_prefix=ITEM-LOAD-", op, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var p model.PurgeResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
+	require.EqualValues(t, 2, p.Deleted, "only the two ITEM-LOAD-* items are purged")
+
+	// The purged items' stock cascaded away; the non-matching fixture survives.
+	var loadStock int64
+	require.NoError(t, testDB.Model(&model.Stock{}).Where("item_id IN ?", []string{load1, load2}).Count(&loadStock).Error)
+	require.EqualValues(t, 0, loadStock, "purged items' stock should cascade away")
+
+	var fixtureCount int64
+	require.NoError(t, testDB.Model(&model.Item{}).Where("id = ?", fixture).Count(&fixtureCount).Error)
+	require.EqualValues(t, 1, fixtureCount, "non-matching fixture item must survive")
+}
+
 func TestAdminEndpointsRequireOperator(t *testing.T) {
 	router, signer := newRouter(t)
 	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)

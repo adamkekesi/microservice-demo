@@ -59,6 +59,10 @@ func NewRouter(d Deps) *gin.Engine {
 	admin.Use(authn.RequireRole(authn.RoleOperator, authn.RoleAdmin))
 	admin.POST("/warehouses", h.CreateWarehouse)
 	admin.POST("/items", h.CreateItem)
+	// Bulk SKU-prefix purge (retention sweep) registered before /:id so
+	// DELETE /items isn't shadowed by the param route.
+	admin.DELETE("/items", h.PurgeItems)
+	admin.DELETE("/items/:id", h.DeleteItem)
 	admin.PUT("/stock", h.SetStock)
 
 	// Reads: any authenticated.

@@ -87,6 +87,40 @@ func (s *Service) ListItems(ctx context.Context) ([]model.ItemResponse, error) {
 	return out, nil
 }
 
+// DeleteItem removes an item. Stock rows cascade at the database (FK ON DELETE
+// CASCADE); reservations carry no FK, so deletion always succeeds regardless of
+// any reservations referencing the item. Operator/admin only (enforced by the
+// router). Returns 404 when the item does not exist.
+func (s *Service) DeleteItem(ctx context.Context, id string) error {
+	if !validUUID(id) {
+		return apperror.NotFound("item not found")
+	}
+	if err := s.repo.DeleteItem(ctx, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperror.NotFound("item not found")
+		}
+		return apperror.Internal("could not delete item").Wrap(err)
+	}
+	s.metrics.Incr("logistics.item.deleted")
+	return nil
+}
+
+// PurgeItems bulk-deletes items whose SKU starts with skuPrefix (their stock
+// cascades) — the hourly retention sweep uses it to reclaim churned load items.
+// Operator/admin only (router-enforced). A blank prefix is rejected so a stray
+// call can't wipe the entire catalog.
+func (s *Service) PurgeItems(ctx context.Context, skuPrefix string) (*model.PurgeResponse, error) {
+	if strings.TrimSpace(skuPrefix) == "" {
+		return nil, apperror.Validation("sku_prefix is required", map[string]any{"sku_prefix": "required"})
+	}
+	n, err := s.repo.PurgeItemsBySKUPrefix(ctx, skuPrefix)
+	if err != nil {
+		return nil, apperror.Internal("could not purge items").Wrap(err)
+	}
+	s.metrics.Gauge("logistics.item.purged", float64(n))
+	return &model.PurgeResponse{Deleted: n}, nil
+}
+
 func (s *Service) SetStock(ctx context.Context, req model.SetStockRequest) (*model.SetStockResponse, error) {
 	if !validUUID(req.WarehouseID) || !validUUID(req.ItemID) {
 		return nil, apperror.Validation("warehouse_id and item_id must be valid UUIDs", nil)

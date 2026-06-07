@@ -50,6 +50,12 @@ type Repository interface {
 	CreateItem(ctx context.Context, i *model.Item) error
 	ListItems(ctx context.Context) ([]model.Item, error)
 	ItemExists(ctx context.Context, id string) (bool, error)
+	// DeleteItem removes an item by id; its stock rows cascade (FK ON DELETE
+	// CASCADE). Returns gorm.ErrRecordNotFound when no row matched.
+	DeleteItem(ctx context.Context, id string) error
+	// PurgeItemsBySKUPrefix bulk-deletes items whose SKU starts with prefix;
+	// their stock rows cascade. Returns rows deleted.
+	PurgeItemsBySKUPrefix(ctx context.Context, prefix string) (int64, error)
 
 	SetStock(ctx context.Context, warehouseID, itemID string, onHand int, now time.Time) (*model.Stock, error)
 	GetStockView(ctx context.Context, warehouseID, itemID string) (onHand, reserved, available int, err error)
@@ -94,6 +100,28 @@ func (r *repo) ListItems(ctx context.Context) ([]model.Item, error) {
 
 func (r *repo) ItemExists(ctx context.Context, id string) (bool, error) {
 	return r.exists(ctx, &model.Item{}, id)
+}
+
+// DeleteItem deletes the item; the stock_item_id_fkey ON DELETE CASCADE removes
+// its stock rows in the same statement. Reservations have no FK to items, so
+// they are left untouched (the retention sweep handles terminal ones).
+func (r *repo) DeleteItem(ctx context.Context, id string) error {
+	res := r.db.WithContext(ctx).Where("id = ?", id).Delete(&model.Item{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// PurgeItemsBySKUPrefix deletes every item whose SKU begins with prefix; the
+// stock_item_id_fkey ON DELETE CASCADE removes their stock rows. The caller
+// guarantees a non-empty prefix so this never wipes the whole catalog.
+func (r *repo) PurgeItemsBySKUPrefix(ctx context.Context, prefix string) (int64, error) {
+	res := r.db.WithContext(ctx).Where("sku LIKE ?", prefix+"%").Delete(&model.Item{})
+	return res.RowsAffected, res.Error
 }
 
 func (r *repo) exists(ctx context.Context, m any, id string) (bool, error) {
