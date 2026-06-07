@@ -18,4 +18,3 @@ resources:
   - shipment/service.yaml
   - shipment/hpa.yaml
   - ingress.yaml
-  - docs-ingress.yaml
