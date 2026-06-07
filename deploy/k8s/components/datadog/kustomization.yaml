@@ -1,17 +1,163 @@
-# Kustomize Component: turns Datadog tracing ON for the three services.
+# Kustomize Component: turns Datadog tracing ON for the three services AND wires
+# the three Postgres instances into Datadog Database Monitoring (DBM).
 #
 # The base keeps DD_TRACE_ENABLED=false so it stays agent-free and zero-secrets
 # (see deploy/k8s/README.md). This component is referenced by overlays/local so
 # the demo opts in with a single line, while base remains neutral for anyone
 # building their own overlay. Pair it with `make datadog-up`, which deploys the
-# Agent the enabled tracers send to.
+# Agent the enabled tracers and the postgres check report to.
 #
-# Strategic-merge patches: env is a list keyed by `name`, so each patch updates
-# only DD_TRACE_ENABLED on its (differently named) container.
+# Service patches (strategic-merge): env is a list keyed by `name`, so each
+# patch updates only DD_TRACE_ENABLED on its (differently named) container.
+#
+# Postgres patches: each StatefulSet gets
+#   - a `ad.datadoghq.com/postgres.checks` annotation — Kubernetes Autodiscovery.
+#     The node Agent reads it off the kubelet and runs the postgres integration
+#     against the pod (%%host%% = pod IP), authenticating as the `datadog` role.
+#   - `-c shared_preload_libraries=pg_stat_statements` (+ track tuning) on the
+#     postgres server, the per-statement metrics source DBM needs. This is a
+#     start-time flag, so applying it recreates the pod.
+#   - the postgres-dbm-init.sql ConfigMap mounted at /docker-entrypoint-initdb.d,
+#     which creates the `datadog` role + DBM schema/function on a fresh volume.
+# Each instance's check targets its own logical DB (dbname), so the three patches
+# differ only by name/dbname.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
+# DBM bootstrap SQL, shared by all three instances (identical, runs against each
+# instance's own POSTGRES_DB). Hashed name is auto-rewritten in the volume refs.
+configMapGenerator:
+  - name: postgres-dbm-init
+    files:
+      - postgres-dbm-init.sql
+
 patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postgres-auth
+      spec:
+        template:
+          metadata:
+            annotations:
+              ad.datadoghq.com/postgres.checks: |
+                {
+                  "postgres": {
+                    "init_config": {},
+                    "instances": [
+                      {
+                        "host": "%%host%%",
+                        "port": 5432,
+                        "username": "datadog",
+                        "password": "datadog",
+                        "dbname": "auth_db",
+                        "dbm": true
+                      }
+                    ]
+                  }
+                }
+          spec:
+            containers:
+              - name: postgres
+                args:
+                  - "-c"
+                  - "shared_preload_libraries=pg_stat_statements"
+                  - "-c"
+                  - "pg_stat_statements.track=all"
+                  - "-c"
+                  - "track_activity_query_size=4096"
+                volumeMounts:
+                  - name: dbm-init
+                    mountPath: /docker-entrypoint-initdb.d
+            volumes:
+              - name: dbm-init
+                configMap:
+                  name: postgres-dbm-init
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postgres-inventory
+      spec:
+        template:
+          metadata:
+            annotations:
+              ad.datadoghq.com/postgres.checks: |
+                {
+                  "postgres": {
+                    "init_config": {},
+                    "instances": [
+                      {
+                        "host": "%%host%%",
+                        "port": 5432,
+                        "username": "datadog",
+                        "password": "datadog",
+                        "dbname": "inventory_db",
+                        "dbm": true
+                      }
+                    ]
+                  }
+                }
+          spec:
+            containers:
+              - name: postgres
+                args:
+                  - "-c"
+                  - "shared_preload_libraries=pg_stat_statements"
+                  - "-c"
+                  - "pg_stat_statements.track=all"
+                  - "-c"
+                  - "track_activity_query_size=4096"
+                volumeMounts:
+                  - name: dbm-init
+                    mountPath: /docker-entrypoint-initdb.d
+            volumes:
+              - name: dbm-init
+                configMap:
+                  name: postgres-dbm-init
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postgres-shipment
+      spec:
+        template:
+          metadata:
+            annotations:
+              ad.datadoghq.com/postgres.checks: |
+                {
+                  "postgres": {
+                    "init_config": {},
+                    "instances": [
+                      {
+                        "host": "%%host%%",
+                        "port": 5432,
+                        "username": "datadog",
+                        "password": "datadog",
+                        "dbname": "shipment_db",
+                        "dbm": true
+                      }
+                    ]
+                  }
+                }
+          spec:
+            containers:
+              - name: postgres
+                args:
+                  - "-c"
+                  - "shared_preload_libraries=pg_stat_statements"
+                  - "-c"
+                  - "pg_stat_statements.track=all"
+                  - "-c"
+                  - "track_activity_query_size=4096"
+                volumeMounts:
+                  - name: dbm-init
+                    mountPath: /docker-entrypoint-initdb.d
+            volumes:
+              - name: dbm-init
+                configMap:
+                  name: postgres-dbm-init
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
