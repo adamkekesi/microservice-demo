@@ -520,3 +520,30 @@ func TestPurgeReservations(t *testing.T) {
 	require.Equal(t, http.StatusOK, doJSON(t, router, http.MethodGet, "/reservations/"+pending.ID, cust, nil).Code,
 		"the PENDING reservation survives")
 }
+
+// The retention purge also reclaims expired-but-PENDING reservations (the rows
+// lazy expiry leaves behind); a still-active PENDING reservation survives.
+func TestPurgeExpiredPendingReservations(t *testing.T) {
+	router, signer := newRouter(t)
+	op := tokenFor(t, signer, uuid.NewString(), authn.RoleOperator)
+	cust := tokenFor(t, signer, uuid.NewString(), authn.RoleCustomer)
+	wh, item := createWHItemStock(t, router, op, 100)
+	cutoff := url.QueryEscape(time.Now().Add(time.Hour).Format(time.RFC3339))
+
+	expired := reserveResp(t, reserve(t, router, cust, wh, item, 10))
+	require.NoError(t, testDB.Exec("UPDATE reservations SET expires_at = ? WHERE id = ?",
+		time.Now().Add(-time.Hour), expired.ID).Error)
+	active := reserveResp(t, reserve(t, router, cust, wh, item, 10)) // future expiry -> stays active
+
+	rec := doJSON(t, router, http.MethodDelete, "/reservations?before="+cutoff, op, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var p model.PurgeResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
+	require.EqualValues(t, 1, p.Deleted, "only the expired PENDING reservation is purged")
+
+	require.Equal(t, http.StatusNotFound,
+		doJSON(t, router, http.MethodGet, "/reservations/"+expired.ID, cust, nil).Code)
+	require.Equal(t, http.StatusOK,
+		doJSON(t, router, http.MethodGet, "/reservations/"+active.ID, cust, nil).Code,
+		"a still-active PENDING reservation survives")
+}

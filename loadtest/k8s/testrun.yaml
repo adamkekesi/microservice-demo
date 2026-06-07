@@ -28,9 +28,9 @@ spec:
         value: http://ingress-nginx-controller.ingress-nginx.svc
       # Diurnal profile: 40 visitors/s during 08:00-12:00, 10/s otherwise.
       - name: VISITORS_PEAK
-        value: "800"
+        value: "300"
       - name: VISITORS_OFF
-        value: "400"
+        value: "100"
       - name: PEAK_START_HOUR
         value: "8"
       - name: PEAK_END_HOUR
@@ -40,7 +40,7 @@ spec:
         value: "0"
       # Fraction of visitors who place (and then delete) an order.
       - name: ORDER_RATE
-        value: "0.6"
+        value: "0.3"
       # 70% of visits are returning users (reuse a pooled account, just log in);
       # the rest are first-time signups (register + log in). Eases auth bcrypt
       # load and shrinks user-row growth.

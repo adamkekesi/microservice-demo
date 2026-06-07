@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/adamkekesi/microservice-demo/inventory/internal/model"
-	"github.com/adamkekesi/microservice-demo/inventory/internal/stock"
 	"github.com/adamkekesi/microservice-demo/platform/apperror"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -69,6 +68,10 @@ type Repository interface {
 	// PurgeTerminalReservationsBefore bulk-deletes terminal (COMMITTED/RELEASED)
 	// reservations created before the cutoff. Returns rows deleted.
 	PurgeTerminalReservationsBefore(ctx context.Context, before time.Time) (int64, error)
+	// PurgeExpiredPendingReservations bulk-deletes PENDING reservations whose
+	// expires_at is already in the past — dead rows that lazy expiry leaves behind
+	// and that can never become active again. Returns rows deleted.
+	PurgeExpiredPendingReservations(ctx context.Context, now time.Time) (int64, error)
 }
 
 type repo struct{ db *gorm.DB }
@@ -132,16 +135,24 @@ func (r *repo) exists(ctx context.Context, m any, id string) (bool, error) {
 	return count > 0, nil
 }
 
-// sumActive loads the PENDING reservations for a (warehouse, item) pair and
-// sums the active ones via the pure stock math, so the availability rule lives
-// in exactly one place (Spec §4.2). Callers run this inside the locked tx.
+// sumActive returns the total quantity of ACTIVE reservations (PENDING and not
+// yet expired) for a (warehouse, item) pair (Spec §4.2). Callers run this inside
+// the locked tx. The "active" predicate mirrors stock.Active (the unit-tested
+// source of truth) — KEEP THE TWO IN SYNC — but is evaluated in SQL: the DB
+// filters via idx_reservations_active and returns a single SUM, instead of
+// loading every PENDING row (including long-expired ones) into Go. `now` is bound
+// as a parameter so the whole operation shares one notion of "now".
 func sumActive(tx *gorm.DB, warehouseID, itemID string, now time.Time) (int, error) {
-	var rs []model.Reservation
-	if err := tx.Where("warehouse_id = ? AND item_id = ? AND status = ?",
-		warehouseID, itemID, model.StatusPending).Find(&rs).Error; err != nil {
+	var total int64
+	err := tx.Model(&model.Reservation{}).
+		Where("warehouse_id = ? AND item_id = ? AND status = ? AND expires_at > ?",
+			warehouseID, itemID, model.StatusPending, now).
+		Select("COALESCE(SUM(quantity), 0)"). // SUM over zero rows is NULL
+		Scan(&total).Error
+	if err != nil {
 		return 0, err
 	}
-	return stock.Reserved(rs, now), nil
+	return int(total), nil
 }
 
 func (r *repo) GetStockView(ctx context.Context, warehouseID, itemID string) (int, int, int, error) {
@@ -308,6 +319,13 @@ func (r *repo) PurgeTerminalReservationsBefore(ctx context.Context, before time.
 	terminal := []model.ReservationStatus{model.StatusCommitted, model.StatusReleased}
 	res := r.db.WithContext(ctx).
 		Where("status IN ? AND created_at < ?", terminal, before).
+		Delete(&model.Reservation{})
+	return res.RowsAffected, res.Error
+}
+
+func (r *repo) PurgeExpiredPendingReservations(ctx context.Context, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Where("status = ? AND expires_at < ?", model.StatusPending, now).
 		Delete(&model.Reservation{})
 	return res.RowsAffected, res.Error
 }

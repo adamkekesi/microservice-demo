@@ -283,8 +283,17 @@ func (s *Service) PurgeReservations(ctx context.Context, before string) (*model.
 	if err != nil {
 		return nil, apperror.Internal("could not purge reservations").Wrap(err)
 	}
-	s.metrics.Gauge("logistics.reservation.purged", float64(n))
-	return &model.PurgeResponse{Deleted: n}, nil
+	// Also reclaim expired-but-PENDING rows that lazy expiry leaves behind. They
+	// can never become active again, so deleting them keeps the table — and the
+	// idx_reservations_active index that sumActive relies on — from growing
+	// unbounded over a soak.
+	m, err := s.repo.PurgeExpiredPendingReservations(ctx, s.now())
+	if err != nil {
+		return nil, apperror.Internal("could not purge reservations").Wrap(err)
+	}
+	total := n + m
+	s.metrics.Gauge("logistics.reservation.purged", float64(total))
+	return &model.PurgeResponse{Deleted: total}, nil
 }
 
 // loadAndAuthorize fetches a reservation and checks the caller may act on it

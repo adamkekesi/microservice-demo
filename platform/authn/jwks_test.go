@@ -110,6 +110,56 @@ func TestVerifier_FailsClosedWhenJWKSUnavailable(t *testing.T) {
 	require.False(t, v.Ready())
 }
 
+func TestVerifier_EnsureReadyFetchesWhenCold(t *testing.T) {
+	key, _ := GenerateRSAKey(2048)
+	srv := newJWKSServer(JWKS{Keys: []JWK{PublicJWK(&key.PublicKey, "auth-key-1")}})
+	defer srv.Close()
+
+	v := NewVerifier(srv.URL, testIssuer, 10*time.Minute)
+	require.False(t, v.Ready(), "cache starts empty")
+
+	require.True(t, v.EnsureReady(context.Background()), "cold cache must fetch and become ready")
+	require.Equal(t, int64(1), srv.fetches.Load(), "exactly one fetch for the cold cache")
+
+	require.True(t, v.EnsureReady(context.Background()), "already-ready verifier stays ready")
+	require.Equal(t, int64(1), srv.fetches.Load(), "ready fast path must not fetch again")
+}
+
+func TestVerifier_EnsureReadyFailsWhenUnavailable(t *testing.T) {
+	key, _ := GenerateRSAKey(2048)
+	srv := newJWKSServer(JWKS{Keys: []JWK{PublicJWK(&key.PublicKey, "auth-key-1")}})
+	srv.Close() // server is down: fetch fails, cache stays empty
+
+	v := NewVerifier(srv.URL, testIssuer, 10*time.Minute)
+	require.False(t, v.EnsureReady(context.Background()), "unreachable JWKS must report not ready")
+	require.False(t, v.Ready())
+}
+
+func TestVerifier_EnsureReadyRecoversWhenJWKSComesUp(t *testing.T) {
+	key, _ := GenerateRSAKey(2048)
+
+	// Server starts by failing every fetch (simulates the auth service not yet up).
+	var up atomic.Bool
+	set := JWKS{Keys: []JWK{PublicJWK(&key.PublicKey, "auth-key-1")}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	}))
+	defer srv.Close()
+
+	v := NewVerifier(srv.URL, testIssuer, 10*time.Minute)
+	require.False(t, v.EnsureReady(context.Background()), "not ready while JWKS endpoint is down")
+
+	// Auth service comes up; a later probe must recover without restarting.
+	up.Store(true)
+	require.True(t, v.EnsureReady(context.Background()), "later probe recovers once JWKS is reachable")
+	require.True(t, v.Ready())
+}
+
 func TestVerifier_ExpiredTokenRejected(t *testing.T) {
 	key, _ := GenerateRSAKey(2048)
 	signer := NewSigner(key, "auth-key-1", testIssuer, -time.Minute) // already expired

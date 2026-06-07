@@ -114,6 +114,22 @@ func (v *Verifier) Ready() bool {
 	return len(v.keys) > 0
 }
 
+// EnsureReady reports readiness, fetching the JWKS once if the cache is still
+// empty. Readiness probes call this so a pod that missed the startup fetch
+// (Prime) recovers on a later probe instead of deadlocking: it never becomes
+// Ready, so no authenticated request arrives to trigger the lazy refresh in
+// keyForKid. Once keys are cached the fast path returns immediately with no
+// fetch.
+func (v *Verifier) EnsureReady(ctx context.Context) bool {
+	if v.Ready() {
+		return true
+	}
+	if err := v.fetch(ctx); err != nil {
+		return false
+	}
+	return v.Ready()
+}
+
 func (v *Verifier) fetch(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
 	if err != nil {

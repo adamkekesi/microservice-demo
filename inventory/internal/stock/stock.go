@@ -12,6 +12,10 @@ import (
 // Active reports whether a reservation counts against availability: it must be
 // PENDING and not yet expired (lazy expiry — an expired PENDING row is simply
 // excluded, no background job required).
+//
+// NOTE: the hot path sums active reservations in SQL (repository.sumActive:
+// "status = PENDING AND expires_at > now"). Keep that predicate in sync with this
+// function — they are two encodings of the same rule.
 func Active(r model.Reservation, now time.Time) bool {
 	return r.Status == model.StatusPending && r.ExpiresAt.After(now)
 }

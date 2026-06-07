@@ -41,7 +41,7 @@ func NewRouter(d Deps) *gin.Engine {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "database"})
 			return
 		}
-		if !d.Verifier.Ready() {
+		if !d.Verifier.EnsureReady(c.Request.Context()) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "jwks"})
 			return
 		}

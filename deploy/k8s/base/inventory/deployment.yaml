@@ -87,6 +87,12 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+            # The DB ping can be slow when the connection pool is briefly busy
+            # under heavy load; a 1s timeout / 3 failures flaps pods out of
+            # rotation and stalls rollouts. Allow more slack (5s, ~30s of grace)
+            # so transient DB slowness doesn't mark a healthy pod NotReady.
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             requests:
               cpu: 100m
