@@ -14,6 +14,9 @@
 #   - a `ad.datadoghq.com/postgres.checks` annotation — Kubernetes Autodiscovery.
 #     The node Agent reads it off the kubelet and runs the postgres integration
 #     against the pod (%%host%% = pod IP), authenticating as the `datadog` role.
+#     `relations` (regex .* over the public schema) turns on the per-table metrics
+#     — including postgresql.live_rows, the estimated row count per relation — that
+#     the check otherwise skips. pg_monitor already covers the stat reads they need.
 #   - `-c shared_preload_libraries=pg_stat_statements` (+ track tuning) on the
 #     postgres server, the per-statement metrics source DBM needs. This is a
 #     start-time flag, so applying it recreates the pod.
@@ -52,7 +55,10 @@ patches:
                         "username": "datadog",
                         "password": "datadog",
                         "dbname": "auth_db",
-                        "dbm": true
+                        "dbm": true,
+                        "relations": [
+                          { "relation_regex": ".*", "schemas": ["public"] }
+                        ]
                       }
                     ]
                   }
@@ -94,7 +100,10 @@ patches:
                         "username": "datadog",
                         "password": "datadog",
                         "dbname": "inventory_db",
-                        "dbm": true
+                        "dbm": true,
+                        "relations": [
+                          { "relation_regex": ".*", "schemas": ["public"] }
+                        ]
                       }
                     ]
                   }
@@ -136,7 +145,10 @@ patches:
                         "username": "datadog",
                         "password": "datadog",
                         "dbname": "shipment_db",
-                        "dbm": true
+                        "dbm": true,
+                        "relations": [
+                          { "relation_regex": ".*", "schemas": ["public"] }
+                        ]
                       }
                     ]
                   }

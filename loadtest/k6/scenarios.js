@@ -57,9 +57,9 @@ const VISITOR_PASSWORD = 'loadtest123';
 // hourly delete-wave purges everything with that SKU prefix (see
 // loadtest/k8s/soak/cronjob-prune.yaml), keeping the catalog bounded across the
 // soak while leaving the persistent fixture item (SKU-LOAD) untouched.
-const RESTOCK_RATE = parseFloat(__ENV.RESTOCK_RATE || '0.2'); // fraction of visitors doing inventory upkeep
-const ITEMS_PER_VISIT = parseInt(__ENV.ITEMS_PER_VISIT || '5', 10); // unique items created per upkeep visit
-const STOCK_PUTS_PER_VISIT = parseInt(__ENV.STOCK_PUTS_PER_VISIT || '3', 10); // PUT /stock per created item
+const RESTOCK_RATE = parseFloat(__ENV.RESTOCK_RATE || '0.01'); // fraction of visitors doing inventory upkeep
+const ITEMS_PER_VISIT = parseInt(__ENV.ITEMS_PER_VISIT || '1', 10); // unique items created per upkeep visit
+const STOCK_PUTS_PER_VISIT = parseInt(__ENV.STOCK_PUTS_PER_VISIT || '10', 10); // PUT /stock per created item
 
 // Per-VU token cache (email -> { token, exp }). VU module-scope state persists
 // across that VU's iterations, so a returning user reuses its token within TTL.

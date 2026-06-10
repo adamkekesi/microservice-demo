@@ -4,6 +4,19 @@
 # wall clock, each launch runs at the level appropriate for the current hour;
 # if the cluster was down, the next tick simply resumes at the correct level.
 #
+# IMPORTANT: the relaunch is delete-then-apply, NOT `kubectl replace --force`.
+# Every TestRun here has the SAME name (logistics-load), so the operator's
+# runner Jobs always get the same names (logistics-load-1..N). `replace --force`
+# deletes the TestRun and immediately recreates it, but the old run's child Jobs
+# are only garbage-collected in the BACKGROUND afterwards — so the new run races
+# the leftover Jobs, collides on the logistics-load-1 name, and the operator
+# wedges forever at stage=initialized with "job with the name logistics-load-1
+# exists; make sure you've deleted your previous run" (only runner pod 1 is ever
+# created, it sits k6-paused, and zero requests are sent). To avoid the race the
+# initContainer deletes the prior TestRun with FOREGROUND cascade and --wait, so
+# kubectl blocks until every child Job/pod is actually gone before the launcher
+# container applies the fresh TestRun.
+#
 # The TestRun manifest is mounted from the k6-testrun-manifest ConfigMap, which
 # `make soak-up` creates from loadtest/k8s/testrun.yaml.
 apiVersion: batch/v1
@@ -23,16 +36,26 @@ spec:
         spec:
           serviceAccountName: k6-soak
           restartPolicy: OnFailure
-          containers:
-            - name: launcher
-              # rancher/kubectl is a small, reliably-pullable kubectl image (it
-              # ships only the kubectl binary — no shell). `replace --force`
-              # deletes the existing TestRun (the operator garbage-collects its
-              # runner pods) and recreates it, in a single shell-free command —
-              # equivalent to delete + apply, which is what relaunches the run.
+          # Step 1: delete the previous TestRun and BLOCK until its child Jobs /
+          # runner pods are fully gone. --cascade=foreground makes the TestRun
+          # linger (via a foreground-deletion finalizer) until all dependents are
+          # removed, and --wait makes kubectl block on that. --ignore-not-found
+          # keeps the very first launch (nothing to delete) a no-op success.
+          initContainers:
+            - name: cleanup
               image: rancher/kubectl:v1.29.2
               command: ["kubectl"]
-              args: ["replace", "--force", "-n", "logistics", "-f", "/manifests/testrun.yaml"]
+              args: ["delete", "testrun", "logistics-load", "-n", "logistics", "--ignore-not-found", "--cascade=foreground", "--wait=true", "--timeout=120s"]
+          containers:
+            # Step 2: apply a fresh TestRun. By now no logistics-load-* Jobs
+            # remain, so the operator creates all `parallelism` runners cleanly,
+            # waits for them to be ready, and starts the run. rancher/kubectl is a
+            # small, reliably-pullable, shell-free kubectl image; each step is a
+            # single kubectl invocation, so no shell is needed.
+            - name: launcher
+              image: rancher/kubectl:v1.29.2
+              command: ["kubectl"]
+              args: ["apply", "-n", "logistics", "-f", "/manifests/testrun.yaml"]
               volumeMounts:
                 - name: testrun
                   mountPath: /manifests
